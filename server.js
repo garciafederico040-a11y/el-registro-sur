@@ -5,17 +5,18 @@ const path = require('path');
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-// Leemos la plantilla HTML v3 base
 const templateHtml = fs.readFileSync(path.join(__dirname, 'template.html'), 'utf-8');
+const TELEGRAM_TOKEN = '9253246227:AAFaJzhi3uxaoWLuxg9E0HZ4WfT0YdPts6w';
 
 async function estructurarNoticiaConGemini(textoCrudo) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('Falta configurar la variable GEMINI_API_KEY en Render.');
+    throw new Error('Falta configurar GEMINI_API_KEY en Render.');
   }
 
-  const systemPrompt = `Sos el editor general de 'El Registro Sur'. A partir del texto crudo enviado desde la calle, devolvé ÚNICAMENTE un objeto JSON válido (sin bloques markdown ni texto extra) con esta estructura exacta:
+  const systemPrompt = `Sos el editor general de 'El Registro Sur'. A partir del texto crudo enviado desde la calle, devolvé ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
 {
   "categoria": "SECCIÓN en mayúsculas (ej. POLÍTICA, SOCIEDAD, POLICIALES, JUDICIAL, ECONOMÍA)",
   "titulo": "Titular corto en mayúsculas, directo e impactante (máx 8 palabras)",
@@ -30,17 +31,9 @@ async function estructurarNoticiaConGemini(textoCrudo) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: systemPrompt }]
-        },
-        contents: [
-          {
-            parts: [{ text: textoCrudo }]
-          }
-        ],
-        generationConfig: {
-          responseMimeType: 'application/json'
-        }
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ parts: [{ text: textoCrudo }] }],
+        generationConfig: { responseMimeType: 'application/json' }
       })
     }
   );
@@ -52,25 +45,25 @@ async function estructurarNoticiaConGemini(textoCrudo) {
 
   const data = await response.json();
   const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!rawText) {
-    throw new Error('Gemini no devolvió contenido.');
-  }
-
   return JSON.parse(rawText);
 }
 
 app.post('/generar', async (req, res) => {
   try {
-    let { foto_url, texto_crudo, categoria, titulo, destacar, bajada, fill_mode } = req.body;
+    let { foto_url, file_path, texto_crudo, categoria, titulo, destacar, bajada, fill_mode } = req.body;
     let copy = '';
 
-    // Si viene texto_crudo desde Make/Telegram, Gemini redacta todo automáticamente
+    // Arma la URL completa de Telegram automáticamente si viene file_path suelto
+    if (!foto_url && file_path) {
+      foto_url = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${file_path}`;
+    }
+
     if (texto_crudo && texto_crudo.trim().length > 0) {
       const noticiaIA = await estructurarNoticiaConGemini(texto_crudo);
-      categoria = noticiaIA.categoria || categoria || 'NOTICIA';
-      titulo = noticiaIA.titulo || titulo || '';
-      destacar = noticiaIA.destacar || destacar || '';
-      bajada = noticiaIA.bajada || bajada || '';
+      categoria = noticiaIA.categoria || 'NOTICIA';
+      titulo = noticiaIA.titulo || '';
+      destacar = noticiaIA.destacar || '';
+      bajada = noticiaIA.bajada || '';
       copy = noticiaIA.copy || '';
     }
 
@@ -82,7 +75,6 @@ app.post('/generar', async (req, res) => {
     const page = await browser.newPage();
     await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
 
-    // Inyectamos los datos dentro de la plantilla
     let htmlModificado = templateHtml
       .replace('FALLO DE LA CORTE: REHABILITAN LA VENTA DE TIERRAS A EXTRANJEROS TRAS EL DNU DE MILEI', (titulo || '').replace(/"/g, '&quot;'))
       .replace('VENTA DE TIERRAS A EXTRANJEROS', (destacar || '').replace(/"/g, '&quot;'))
@@ -95,18 +87,13 @@ app.post('/generar', async (req, res) => {
     }
 
     await page.setContent(htmlModificado, { waitUntil: 'networkidle0' });
-
-    // Esperar a que las fuentes y el canvas se rendericen
     await page.evaluate(() => document.fonts.ready);
     await new Promise(r => setTimeout(r, 600));
 
-    // Captura exacta del lienzo en 1080x1080
     const canvasElement = await page.$('#canvas');
     const imageBuffer = await canvasElement.screenshot({ type: 'png' });
-
     await browser.close();
 
-    // Si vino texto_crudo, devolvemos JSON con la imagen en base64 + los textos redactados
     if (texto_crudo && texto_crudo.trim().length > 0) {
       return res.json({
         ok: true,
@@ -119,7 +106,6 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // Modo clásico binario si se llama sin texto_crudo
     res.set('Content-Type', 'image/png');
     res.send(imageBuffer);
   } catch (err) {
