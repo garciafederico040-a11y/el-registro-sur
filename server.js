@@ -32,7 +32,7 @@ async function estructurarNoticiaConIA(textoCrudo) {
       'Authorization': `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: 'llama-3.3-70b-versatile',
+      model: 'openai/gpt-oss-120b',
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemPrompt },
