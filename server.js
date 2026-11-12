@@ -25,37 +25,27 @@ async function estructurarNoticiaConGemini(textoCrudo) {
   "copy": "Texto plano limpio para Instagram y Facebook (sin viñetas ni asteriscos): título en mayúsculas con 2 emojis relevantes, bajada periodística en 2 párrafos cortos y al final 4 hashtags incluyendo #ElRegistroSur #CaletaOlivia #SantaCruz"
 }`;
 
-  let ultimoError = '';
-
-  for (let intento = 1; intento <= 3; intento++) {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ parts: [{ text: textoCrudo }] }],
-          generationConfig: { responseMimeType: 'application/json' }
-        })
-      }
-    );
-
-    if (response.ok) {
-      const data = await response.json();
-      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      return JSON.parse(rawText);
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-lite:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ parts: [{ text: textoCrudo }] }],
+        generationConfig: { responseMimeType: 'application/json' }
+      })
     }
+  );
 
-    ultimoError = await response.text();
-    if (response.status === 503 || response.status === 429) {
-      await new Promise(r => setTimeout(r, 2000));
-      continue;
-    }
-    throw new Error(`Error de Gemini (${response.status}): ${ultimoError}`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Error de Gemini (${response.status}): ${errorText}`);
   }
 
-  throw new Error(`Gemini saturado tras 3 intentos: ${ultimoError}`);
+  const data = await response.json();
+  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  return JSON.parse(rawText);
 }
 
 app.post('/generar', async (req, res) => {
