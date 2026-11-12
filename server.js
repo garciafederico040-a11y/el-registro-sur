@@ -10,10 +10,10 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 const templateHtml = fs.readFileSync(path.join(__dirname, 'template.html'), 'utf-8');
 const TELEGRAM_TOKEN = '9253246227:AAFaJzhi3uxaoWLuxg9E0HZ4WfT0YdPts6w';
 
-async function estructurarNoticiaConGemini(textoCrudo) {
-  const apiKey = process.env.GEMINI_API_KEY;
+async function estructurarNoticiaConIA(textoCrudo) {
+  const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    throw new Error('Falta configurar GEMINI_API_KEY en Render.');
+    throw new Error('Falta configurar GROQ_API_KEY en Render.');
   }
 
   const systemPrompt = `Sos el editor general de 'El Registro Sur'. A partir del texto crudo enviado desde la calle, devolvé ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
@@ -25,26 +25,29 @@ async function estructurarNoticiaConGemini(textoCrudo) {
   "copy": "Texto plano limpio para Instagram y Facebook (sin viñetas ni asteriscos): título en mayúsculas con 2 emojis relevantes, bajada periodística en 2 párrafos cortos y al final 4 hashtags incluyendo #ElRegistroSur #CaletaOlivia #SantaCruz"
 }`;
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-lite:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ parts: [{ text: textoCrudo }] }],
-        generationConfig: { responseMimeType: 'application/json' }
-      })
-    }
-  );
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: textoCrudo }
+      ]
+    })
+  });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Error de Gemini (${response.status}): ${errorText}`);
+    throw new Error(`Error de Groq (${response.status}): ${errorText}`);
   }
 
   const data = await response.json();
-  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  const rawText = data?.choices?.[0]?.message?.content;
   return JSON.parse(rawText);
 }
 
@@ -58,7 +61,7 @@ app.post('/generar', async (req, res) => {
     }
 
     if (texto_crudo && texto_crudo.trim().length > 0) {
-      const noticiaIA = await estructurarNoticiaConGemini(texto_crudo);
+      const noticiaIA = await estructurarNoticiaConIA(texto_crudo);
       categoria = noticiaIA.categoria || 'NOTICIA';
       titulo = noticiaIA.titulo || '';
       destacar = noticiaIA.destacar || '';
