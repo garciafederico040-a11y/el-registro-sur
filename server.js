@@ -9,9 +9,70 @@ app.use(express.json({ limit: '25mb' }));
 // Leemos la plantilla HTML v3 base
 const templateHtml = fs.readFileSync(path.join(__dirname, 'template.html'), 'utf-8');
 
+async function estructurarNoticiaConGemini(textoCrudo) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('Falta configurar la variable GEMINI_API_KEY en Render.');
+  }
+
+  const systemPrompt = `Sos el editor general de 'El Registro Sur'. A partir del texto crudo enviado desde la calle, devolvé ÚNICAMENTE un objeto JSON válido (sin bloques markdown ni texto extra) con esta estructura exacta:
+{
+  "categoria": "SECCIÓN en mayúsculas (ej. POLÍTICA, SOCIEDAD, POLICIALES, JUDICIAL, ECONOMÍA)",
+  "titulo": "Titular corto en mayúsculas, directo e impactante (máx 8 palabras)",
+  "destacar": "Frase clave exacta del título que debe ir resaltada en celeste",
+  "bajada": "1 oración corta con el dato clave complementario (máx 15 palabras)",
+  "copy": "Texto plano limpio para Instagram y Facebook (sin viñetas ni asteriscos): título en mayúsculas con 2 emojis relevantes, bajada periodística en 2 párrafos cortos y al final 4 hashtags incluyendo #ElRegistroSur #CaletaOlivia #SantaCruz"
+}`;
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: systemPrompt }]
+        },
+        contents: [
+          {
+            parts: [{ text: textoCrudo }]
+          }
+        ],
+        generationConfig: {
+          responseMimeType: 'application/json'
+        }
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Error de Gemini (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!rawText) {
+    throw new Error('Gemini no devolvió contenido.');
+  }
+
+  return JSON.parse(rawText);
+}
+
 app.post('/generar', async (req, res) => {
   try {
-    const { foto_url, categoria, titulo, destacar, bajada, fill_mode } = req.body;
+    let { foto_url, texto_crudo, categoria, titulo, destacar, bajada, fill_mode } = req.body;
+    let copy = '';
+
+    // Si viene texto_crudo desde Make/Telegram, Gemini redacta todo automáticamente
+    if (texto_crudo && texto_crudo.trim().length > 0) {
+      const noticiaIA = await estructurarNoticiaConGemini(texto_crudo);
+      categoria = noticiaIA.categoria || categoria || 'NOTICIA';
+      titulo = noticiaIA.titulo || titulo || '';
+      destacar = noticiaIA.destacar || destacar || '';
+      bajada = noticiaIA.bajada || bajada || '';
+      copy = noticiaIA.copy || '';
+    }
 
     const browser = await puppeteer.launch({
       headless: 'new',
@@ -21,7 +82,7 @@ app.post('/generar', async (req, res) => {
     const page = await browser.newPage();
     await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
 
-    // Inyectamos los datos recibidos dentro de la plantilla
+    // Inyectamos los datos dentro de la plantilla
     let htmlModificado = templateHtml
       .replace('FALLO DE LA CORTE: REHABILITAN LA VENTA DE TIERRAS A EXTRANJEROS TRAS EL DNU DE MILEI', (titulo || '').replace(/"/g, '&quot;'))
       .replace('VENTA DE TIERRAS A EXTRANJEROS', (destacar || '').replace(/"/g, '&quot;'))
@@ -45,6 +106,20 @@ app.post('/generar', async (req, res) => {
 
     await browser.close();
 
+    // Si vino texto_crudo, devolvemos JSON con la imagen en base64 + los textos redactados
+    if (texto_crudo && texto_crudo.trim().length > 0) {
+      return res.json({
+        ok: true,
+        categoria,
+        titulo,
+        destacar,
+        bajada,
+        copy,
+        imagen_base64: imageBuffer.toString('base64')
+      });
+    }
+
+    // Modo clásico binario si se llama sin texto_crudo
     res.set('Content-Type', 'image/png');
     res.send(imageBuffer);
   } catch (err) {
