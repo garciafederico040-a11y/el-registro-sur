@@ -34,9 +34,8 @@ let ultimoEstado = {
 const noticiasEnviadasRadar = new Set();
 let ultimoClimaDiaEnviado = '';
 
-app.get('/ping', (req, res) => res.status(200).send('OK - Súper Asistente 2K + Botonera Táctil activo'));
+app.get('/ping', (req, res) => res.status(200).send('OK - Súper Asistente 2K + Redactor con Carácter activo'));
 
-// Botonera táctil que se despliega debajo de cada placa en Telegram
 function generarTecladoTactil() {
   return {
     inline_keyboard: [
@@ -62,7 +61,6 @@ function generarTecladoTactil() {
   };
 }
 
-// Apaga el relojito de carga en Telegram cuando tocás un botón táctil
 async function responderCallbackTelegram(callbackQueryId, textoAviso = 'Procesando...') {
   if (!callbackQueryId || !callbackQueryId.trim()) return;
   try {
@@ -172,11 +170,11 @@ async function buscarContextoEnGoogleNews(consulta) {
     const xml = await resp.text();
 
     const items = [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<pubDate>([\s\S]*?)<\/pubDate>[\s\S]*?<\/item>/gi)]
-      .slice(0, 4)
+      .slice(0, 5)
       .map(m => `- ${m[1].replace(/<!\[CDATA\[|\]\]>/g, '')} (${m[2]})`)
       .join('\n');
 
-    return items ? `\nCONTEXTO RECIENTE EN MEDIOS DE ARGENTINA:\n${items}` : '';
+    return items ? `\nFUENTES Y ANTECEDENTES EN MEDIOS DE ARGENTINA:\n${items}` : '';
   } catch (e) {
     return '';
   }
@@ -199,7 +197,6 @@ async function obtenerDatosClimaCaleta() {
   };
 }
 
-// Optimización HD + Encuadre inteligente de rostros (g_auto:faces) o Expansor Mágico (b_gen_fill)
 function optimizarFotoConCloudinary(fotoUrl, expandir = false, alto = 1080) {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
   if (!cloudName || !fotoUrl || fotoUrl.includes('res.cloudinary.com')) return fotoUrl;
@@ -384,38 +381,44 @@ async function auditarYResolverImagen({
 }
 
 // ============================================================================
-// CEREBRO EDITORIAL CON GROQ
+// CEREBRO EDITORIAL CON CARÁCTER, ENRIQUECIMIENTO Y VALIDACIÓN AUTÓNOMA
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('Falta configurar GROQ_API_KEY en Render.');
 
+  const antecedentesExtra = await buscarContextoEnGoogleNews(`${textoCrudo} antecedentes obras montos`);
+
   const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur | elregistrosur.com.ar), medio periodístico digital de Caleta Olivia, Santa Cruz ("El sur tiene registro").
 
-LÍNEA EDITORIAL Y FILTRO POLÍTICO:
-1. Tono institucional, periodístico, factual, directo y moderno.
-2. Posicionamiento: Pro-gestión hacia el Gobierno Nacional (Javier Milei: equilibrio fiscal, desregulación, orden, baja de inflación) y hacia el Gobierno Provincial de Santa Cruz (Claudio Vidal: producción, energía, trabajo, obras y auditoría del Estado).
-3. Contraste mediante datos duros frente al kirchnerismo, desmanejos de gestiones anteriores o paros/bloqueos que afecten servicios y producción, sin insultos ni agravios para cumplir políticas de Meta Ads.
+PERSONALIDAD Y VOZ DE REDACCIÓN ("CON CARÁCTER Y CALLE, CERO HUMO"):
+1. NUNCA SUENES VACÍO NI BUROCRÁTICO: Prohibido escribir como un parte policial muerto o una gacetilla oficial. Nunca arranques con "En el día de la fecha...", "Se llevó a cabo..." o "Cabe destacar...". Arrancá directo con el hecho que impacta en la calle, el bolsillo o la producción, usando verbos de acción, ritmo ágil y autoridad periodística.
+2. VECINO Y PRODUCCIÓN — CERO CHUPAMEDIAS (1B): Mostrá con cifras, presupuestos y hechos concretos lo que impulsa el empleo, la energía, la obra pública y el orden fiscal en Santa Cruz (Claudio Vidal) y Nación (Javier Milei). Señalá con la misma firmeza y datos duros cuando falla un servicio o un aumento golpea al vecino de Caleta Olivia. Prohibido usar adjetivos elogiosos hacia políticos o gestiones ("histórica gestión", "brillante decisión", "gran logro", "enorme esfuerzo").
+3. CERO CUENTA CUENTOS EN CONFLICTOS (3): En cortes de Ruta Nacional N° 3, paros, falta de agua o reclamos locales, nada de épica ni dramatización literaria. Conectá causa y efecto con datos precisos: qué pasa, dónde exactamente, horarios, responsables, antecedentes previos y qué consecuencia real tiene para el vecino o la actividad.
+4. ENRIQUECIMIENTO CON ANTECEDENTES (4A): Cruzá el dato nuevo con el contexto previo confirmado (demoras anteriores, licitaciones previas, cifras comparativas de Zona Norte) para que cada párrafo aporte valor real y no relleno.
+5. VALIDACIÓN Y DESCARTE SILENCIOSO (2B): Contrastá los datos redactados contra las fuentes web recibidas. Si la noticia central no tiene sustento verificable, parece rumor sin respaldo o contradice los hechos (y no es una edición manual del director), devolvé "descartar": true. Eliminá cualquier dato secundario no confirmado.
 
-REGLAS DE SALIDA JSON:
-Devolvé ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
+REGLAS DE FORMATO (TEXTO 100% PLANO PARA META):
+Devolvé ÚNICAMENTE un JSON válido:
 {
-  "categoria": "SECCIÓN / SUBTEMA en MAYÚSCULAS (ej. SANTA CRUZ / GESTIÓN, ECONOMÍA / ENERGÍA, POLÍTICA / NACIÓN, CALETA OLIVIA / CLIMA, URGENTE / ALERTA)",
-  "titulo": "Titular en MAYÚSCULAS, corto, directo y con gancho (4 a 8 palabras máximo)",
-  "destacar": "Subcadena EXACTA dentro de 'titulo' (2 a 4 palabras clave) que irá resaltada",
-  "bajada": "1 sola oración corta y contundente con el dato clave (máx 15 palabras)",
-  "dato_clave": "Cifra, porcentaje o dato numérico central (ej. +45%, 110 KM/H, US$ 1.200M) si aplica, o vacío",
-  "autor_cita": "Nombre y cargo del protagonista si hay declaración textual (ej. CLAUDIO VIDAL - GOBERNADOR), o vacío",
-  "fuente_credito": "Crédito breve de la imagen en MAYÚSCULAS (ej. PRENSA PROVINCIAL, PRENSA NACIÓN, ARCHIVO, SERVICIO METEOROLÓGICO)",
-  "copy": "Texto 100% plano para Instagram y Facebook (SIN viñetas, SIN guiones, SIN asteriscos ni negritas), separado por \\n\\n:\\n1) TITULAR EN MAYÚSCULAS con 2 emojis.\\n2) 2 a 3 párrafos cortos y limpios explicando hechos y contexto.\\n3) Toda la cobertura en @elregistrosur\\n4) Pregunta de debate cerrada con: Te leemos en comentarios 👇\\n5) ---\\n6) 6 a 8 hashtags ESTRICTAMENTE EN MINÚSCULAS (#noticias #elregistrosur #caletaolivia #santacruz más específicos).",
+  "descartar": false,
+  "motivo_descarte": "",
+  "categoria": "SECCIÓN / SUBTEMA en MAYÚSCULAS (ej. SANTA CRUZ / ENERGÍA, CALETA OLIVIA / SERVICIOS, ECONOMÍA / NACIÓN)",
+  "titulo": "Titular en MAYÚSCULAS, con gancho periodístico y directo (4 a 8 palabras máximo)",
+  "destacar": "Subcadena EXACTA dentro de 'titulo' (2 a 4 palabras clave)",
+  "bajada": "1 sola oración contundente con el dato o consecuencia clave (máx 15 palabras)",
+  "dato_clave": "Cifra o porcentaje central si existe, o vacío",
+  "autor_cita": "Nombre y cargo si hay declaración textual, o vacío",
+  "fuente_credito": "Crédito breve en MAYÚSCULAS (ej. PRENSA PROVINCIAL, VIALIDAD, ARCHIVO)",
+  "copy": "Texto 100% plano (SIN viñetas, SIN guiones de lista, SIN asteriscos ni negritas), separado por \\n\\n:\\n1) TITULAR EN MAYÚSCULAS con 2 emojis.\\n2) 2 a 3 párrafos con carácter periodístico, datos verificados, antecedentes y consecuencia real para la región.\\n3) Cierre dinámico (5A): invitación breve y variada a seguir @elregistrosur + pregunta de debate afilada si es política/economía, llamado práctico a compartir/etiquetar vecinos si es clima/corte/servicio, o cierre informativo directo si es noticia breve.\\n4) ---\\n5) 6 a 8 hashtags EN MINÚSCULAS (#noticias #elregistrosur #caletaolivia #santacruz más específicos).",
   "slides_carrusel": [
     { "titulo": "TITULAR PORTADA (6 palabras)", "destacar": "PALABRA CLAVE", "bajada": "Síntesis gancho para deslizar" },
-    { "titulo": "EL CONTEXTO Y LOS DATOS", "destacar": "LOS DATOS", "bajada": "Explicación concreta del hecho en 18 palabras máximo" },
-    { "titulo": "IMPACTO EN LA REGIÓN", "destacar": "LA REGIÓN", "bajada": "Proyección y cierre periodístico en 18 palabras máximo" }
+    { "titulo": "EL ANTECEDENTE Y LOS DATOS", "destacar": "LOS DATOS", "bajada": "Contexto concreto y cifras en 18 palabras máximo" },
+    { "titulo": "QUÉ CAMBIA EN LA REGIÓN", "destacar": "LA REGIÓN", "bajada": "Consecuencia directa en Caleta Olivia o Santa Cruz en 18 palabras" }
   ],
-  "busqueda_foto_web": "3 a 5 palabras clave en español para buscar en internet una foto real de prensa de esta noticia",
-  "prompt_imagen_ia": "Descripción fotográfica realista en inglés (18 palabras, estilo fotoperiodismo editorial, sin texto ni letras)"
+  "busqueda_foto_web": "3 a 5 palabras clave en español para foto real de prensa",
+  "prompt_imagen_ia": "Photorealistic editorial news photography prompt in English (18 words, no text)"
 }`;
 
   const userMessage = esEdicion
@@ -424,10 +427,9 @@ Devolvé ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: ultimoEstado.copy,
-        fuente_credito: ultimoEstado.fuente_credito
-      }, null, 2)}\n\nPedido de modificación del director: "${textoCrudo}".\n${contextoWeb}\nAplicá el cambio respetando todas las reglas y devolvé el JSON actualizado.`
-    : `Información recibida:\n"${textoCrudo}"\n${contextoWeb}\nRedactá la pieza completa en JSON.`;
+        copy: ultimoEstado.copy
+      }, null, 2)}\n\nCambio pedido por el director: "${textoCrudo}".\n${contextoWeb}\nDevolvé el JSON actualizado con "descartar": false.`
+    : `Noticia recibida:\n"${textoCrudo}"\n${contextoWeb}\n${antecedentesExtra}\nRedactá con carácter periodístico, enriquecé con antecedentes y validá los datos en JSON.`;
 
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -523,7 +525,6 @@ async function renderizarFlyer({
 
     const accentColor = modoUrgente ? '#ef4444' : '#38bdf8';
 
-    // 1. Inyección de imagen y cálculo de brillo inferior para contraste automático
     let fotoPrincipal = null;
     const imgs = canvas.querySelectorAll('img');
     imgs.forEach(img => {
@@ -541,7 +542,6 @@ async function renderizarFlyer({
       }
     });
 
-    // Detector de brillo en la mitad inferior de la imagen
     let esFotoClara = false;
     if (fotoPrincipal && fotoPrincipal.complete && fotoPrincipal.naturalWidth > 0) {
       try {
@@ -565,7 +565,6 @@ async function renderizarFlyer({
       canvas.appendChild(refuerzo);
     }
 
-    // 2. Etiqueta discreta de Fuente (arriba a la derecha) y badge de Carrusel
     if (fuenteCredito) {
       const badgeFuente = document.createElement('div');
       badgeFuente.textContent = `FUENTE: ${fuenteCredito.toUpperCase()}`;
@@ -580,7 +579,6 @@ async function renderizarFlyer({
       canvas.appendChild(badgeSlide);
     }
 
-    // 3. Modos visuales alternativos (.cita y .dato)
     if (modoVisual === 'cita' || modoVisual === 'dato') {
       const tituloFormateado = destacar && titulo.includes(destacar)
         ? titulo.replace(destacar, `<span style="color:${accentColor}">${destacar}</span>`)
@@ -630,7 +628,6 @@ async function renderizarFlyer({
       return;
     }
 
-    // 4. Color Urgente en plantilla estándar
     if (modoUrgente) {
       canvas.querySelectorAll('*').forEach(el => {
         const style = window.getComputedStyle(el);
@@ -639,7 +636,6 @@ async function renderizarFlyer({
       });
     }
 
-    // 5. Auto-ajuste de tipografía para evitar que textos largos pisen el logo inferior
     const titulares = canvas.querySelectorAll('h1, h2, .titulo, [class*="title"]');
     titulares.forEach(el => {
       let fontSize = parseFloat(window.getComputedStyle(el).fontSize);
@@ -675,7 +671,6 @@ async function renderizarFlyer({
   return imageBuffer;
 }
 
-// Envía foto + copy + botonera táctil directo a Telegram
 async function enviarFotoConBotonesTelegram(imageBuffer, captionTexto) {
   const form = new FormData();
   form.append('chat_id', EDITOR_CHAT_ID);
@@ -709,6 +704,9 @@ async function generarDatosRadar(forzar = false) {
 
   const contexto = await buscarContextoEnGoogleNews(elegida.titulo);
   const noticiaIA = await procesarNoticiaConIA(`URGENTE DETECTADO: ${elegida.titulo}`, contexto, false);
+
+  // Descarte silencioso si no supera la validación de fuentes (2B)
+  if (noticiaIA.descartar) return null;
 
   const { urlFinal, fuenteAuto } = await auditarYResolverImagen({
     fotoCandidataUrl: '',
@@ -803,7 +801,6 @@ async function ejecutarParteClima() {
   return { imageBuffer, noticiaIA };
 }
 
-// Tareas automáticas: Radar cada 30 min y Clima 08:30 AM
 setInterval(async () => {
   try {
     const radar = await generarDatosRadar(false);
@@ -824,7 +821,7 @@ setInterval(async () => {
 
 app.get('/radar', async (req, res) => {
   const radar = await generarDatosRadar(true);
-  if (!radar) return res.json({ enviado: false, motivo: 'Sin noticias encontradas.' });
+  if (!radar) return res.json({ enviado: false, motivo: 'Sin noticias verificadas encontradas.' });
   await enviarFotoConBotonesTelegram(radar.imageBuffer, `🚨 SUGERENCIA URGENTE DEL RADAR:\n\n${radar.noticiaIA.copy}`);
   res.json({ enviado: true, titulo: radar.noticiaIA.titulo });
 });
@@ -875,8 +872,6 @@ app.post('/generar', async (req, res) => {
 
     const replyMarkupJson = JSON.stringify(generarTecladoTactil());
 
-    // --- EJECUCIÓN DE .COMANDOS Y BOTONES TÁCTILES ---
-
     if (comando === 'comandos' || comando === 'ayuda') {
       const textoAyuda = `🤖 COMANDOS Y BOTONES DE EL REGISTRO SUR:\n\n.urgente → Pone la placa en rojo alerta\n.normal → Vuelve la placa al celeste clásico\n.cita → Diseño de declaración con foto circular\n.dato → Diseño con cifra o porcentaje gigante\n.carrusel → Genera 3 placas (Portada, Contexto e Impacto)\n.historia → Adapta la placa a vertical 9:16\n.expandir → Ajusta la foto entera sin recortar rostros/bordes\n.auditar → Verifica coherencia de foto o busca otra en web/IA\n.ia [tema] → Genera fondo HD con IA\n.editar [cambio] → Corrige textos del borrador actual\n.clima → Parte meteorológico de Caleta Olivia\n.radar → Busca noticia urgente ahora\n.publicar → Sube todo a Facebook e Instagram`;
       await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
@@ -894,7 +889,7 @@ app.post('/generar', async (req, res) => {
 
     if (comando === 'radar' || comando === 'comandoradar') {
       const radar = await generarDatosRadar(true);
-      if (!radar) throw new Error('No se encontraron noticias urgentes en este momento.');
+      if (!radar) throw new Error('No se encontraron noticias urgentes verificadas en este momento.');
       return res.json({
         ok: true,
         categoria: ultimoEstado.categoria,
@@ -955,7 +950,7 @@ app.post('/generar', async (req, res) => {
     }
 
     if (comando === 'carrusel' && ultimoEstado.titulo) {
-      const noticiaIA = await procesarNoticiaConIA(`Generá el carrusel de 3 placas para esta noticia: ${ultimoEstado.titulo}. ${ultimoEstado.copy}`, '', false);
+      const noticiaIA = await procesarNoticiaConIA(`Generá el carrusel de 3 placas para esta noticia: ${ultimoEstado.titulo}. ${ultimoEstado.copy}`, '', true);
       const slides = (noticiaIA.slides_carrusel && noticiaIA.slides_carrusel.length >= 3)
         ? noticiaIA.slides_carrusel.slice(0, 3)
         : [
@@ -985,7 +980,6 @@ app.post('/generar', async (req, res) => {
       ultimoEstado.imagen_buffer = buffers[0];
       ultimoEstado.carrusel_buffers = buffers;
 
-      // Envía las placas 2/3 y 3/3 directo al chat de Telegram
       for (let i = 1; i < 3; i++) {
         const formSlide = new FormData();
         formSlide.append('chat_id', EDITOR_CHAT_ID);
@@ -1257,6 +1251,17 @@ app.post('/generar', async (req, res) => {
 
     if (textoParaProcesar.length > 0) {
       const noticiaIA = await procesarNoticiaConIA(textoParaProcesar, contextoWeb, esEdicion);
+
+      // Descarte silencioso si la validación en fuentes rechaza la noticia (2B)
+      if (!esEdicion && noticiaIA.descartar) {
+        return res.json({
+          ok: true,
+          descartado: true,
+          motivo: noticiaIA.motivo_descarte || 'Sin respaldo verificable',
+          imagen_base64: ''
+        });
+      }
+
       categoria = noticiaIA.categoria || ultimoEstado.categoria || 'NOTICIAS / ACTUALIDAD';
       titulo = noticiaIA.titulo || ultimoEstado.titulo || '';
       destacar = noticiaIA.destacar || '';
@@ -1369,4 +1374,4 @@ app.get('/ultimo-borrador', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Súper Asistente 2K + Botones Táctiles de El Registro Sur listo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Súper Asistente 2K + Redactor con Carácter listo en puerto ${PORT}`));
