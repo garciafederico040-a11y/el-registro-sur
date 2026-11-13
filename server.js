@@ -29,7 +29,7 @@ let ultimoEstado = {
 const noticiasEnviadasRadar = new Set();
 let ultimoClimaDiaEnviado = '';
 
-app.get('/ping', (req, res) => res.status(200).send('OK - Súper Asistente El Registro Sur activo'));
+app.get('/ping', (req, res) => res.status(200).send('OK - Súper Asistente 2K + Auditor IA activo'));
 
 async function resolverArchivoTelegram(valorRecibido) {
   if (!valorRecibido || !valorRecibido.trim()) return { url: '', path: '' };
@@ -79,11 +79,16 @@ async function transcribirAudioConGroq(audioUrl) {
 
 async function extraerNoticiaDeLink(url) {
   try {
-    const resp = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const resp = await fetch(url, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(9000),
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
     const html = await resp.text();
 
     const ogImageMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
-                         html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+                         html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ||
+                         html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i);
     const ogTitleMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
                          html.match(/<title>([^<]+)<\/title>/i);
 
@@ -93,8 +98,14 @@ async function extraerNoticiaDeLink(url) {
       .slice(0, 8)
       .join('\n');
 
+    let fotoUrl = ogImageMatch ? ogImageMatch[1] : '';
+    if (fotoUrl && fotoUrl.startsWith('/')) {
+      const origin = new URL(url).origin;
+      fotoUrl = `${origin}${fotoUrl}`;
+    }
+
     return {
-      fotoExtraida: ogImageMatch ? ogImageMatch[1] : '',
+      fotoExtraida: fotoUrl,
       textoExtraido: `TÍTULO ORIGINAL: ${ogTitleMatch ? ogTitleMatch[1] : ''}\nCUERPO: ${parrafos}`
     };
   } catch (e) {
@@ -108,7 +119,7 @@ async function buscarContextoEnGoogleNews(consulta) {
     if (queryLimpia.length < 5) return '';
 
     const url = `https://news.google.com/rss/search?q=${encodeURIComponent(queryLimpia)}&hl=es-419&gl=AR&ceid=AR:es-419`;
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(7000) });
     const xml = await resp.text();
 
     const items = [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<pubDate>([\s\S]*?)<\/pubDate>[\s\S]*?<\/item>/gi)]
@@ -136,11 +147,202 @@ async function obtenerDatosClimaCaleta() {
   return `PARTE METEOROLÓGICO OFICIAL PARA CALETA OLIVIA HOY: Temperatura actual ${tempActual}°C (Mínima ${minHoy}°C / Máxima ${maxHoy}°C). Viento sostenido de ${vientoActual} km/h con ráfagas máximas previstas de hasta ${rafagasHoy} km/h en la ciudad y Ruta Nacional N° 3.`;
 }
 
-function aplicarExpansorCloudinary(fotoUrl, alto = 1080) {
+function optimizarFotoConCloudinary(fotoUrl, expandir = false, alto = 1080) {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
-  if (!cloudName || !fotoUrl) return fotoUrl;
-  return `https://res.cloudinary.com/${cloudName}/image/fetch/c_pad,w_1080,h_${alto},b_gen_fill,f_auto,q_auto/${encodeURIComponent(fotoUrl)}`;
+  if (!cloudName || !fotoUrl || fotoUrl.includes('res.cloudinary.com')) return fotoUrl;
+
+  if (expandir) {
+    return `https://res.cloudinary.com/${cloudName}/image/fetch/c_pad,w_1440,h_${alto === 1920 ? 2560 : 1440},b_gen_fill,e_improve,e_sharpen:80,f_png,q_100/${encodeURIComponent(fotoUrl)}`;
+  }
+  return `https://res.cloudinary.com/${cloudName}/image/fetch/c_limit,w_2160,h_2160,e_improve,e_sharpen:80,f_png,q_100/${encodeURIComponent(fotoUrl)}`;
 }
+
+function construirUrlPollinationsHD(prompt) {
+  const seed = Math.floor(Math.random() * 999999);
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1440&height=1440&model=flux&enhance=true&nologo=true&seed=${seed}`;
+}
+
+// ============================================================================
+// AUDITOR VISUAL DE IA + BUSCADOR DE IMÁGENES EN LA WEB
+// ============================================================================
+
+async function descargarYValidarImagen(url) {
+  if (!url || !url.startsWith('http')) return null;
+  if (/logo|favicon|avatar|placeholder|default|icon|sprite|blank|1x1|banner-site/i.test(url)) {
+    return null;
+  }
+  try {
+    const resp = await fetch(url, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8000),
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    if (!resp.ok) return null;
+
+    const contentType = resp.headers.get('content-type') || '';
+    if (!contentType.startsWith('image/') || contentType.includes('svg')) return null;
+
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    // Descarta miniaturas borrosas o íconos menores a 18 KB
+    if (buffer.length < 18000 || buffer.length > 8 * 1024 * 1024) return null;
+
+    const mime = contentType.split(';')[0].trim();
+    return {
+      url,
+      dataUrl: `data:${mime};base64,${buffer.toString('base64')}`,
+      bytes: buffer.length
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+async function auditarCoherenciaConVision(imagenValidada, titulo, bajada, categoria) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey || !imagenValidada) {
+    return { aprobada: false, razon: 'Sin imagen válida para auditar' };
+  }
+
+  const promptAuditor = `Sos el Auditor Visual Jefe del diario digital 'El Registro Sur'.
+Analizá la imagen adjunta y comparala con esta noticia:
+- SECCIÓN: ${categoria}
+- TITULAR: ${titulo}
+- BAJADA: ${bajada}
+
+Criterios estrictos para APROBAR o RECHAZAR la imagen:
+1. RECHAZAR si es un logo genérico de un diario/canal, una placa con mucho texto superpuesto, una captura de pantalla borrosa o un gráfico abstracto sin relación.
+2. RECHAZAR si el contenido visual contradice la noticia (ej. muestra playa tropical para una noticia de nieve en Patagonia, o un político/persona totalmente ajena al tema).
+3. APROBAR si muestra el lugar, protagonista, actividad o escena periodística coherente con el titular y tiene nitidez aceptable.
+
+Devolvé ÚNICAMENTE este JSON:
+{
+  "aprobada": true o false,
+  "razon": "Explicación breve en español",
+  "busqueda_web": "3 a 5 palabras clave en español para buscar una foto real de prensa en internet si fue rechazada",
+  "prompt_ia_corregido": "Detailed photorealistic news photography prompt in English (20 words, natural lighting, sharp focus, no text or watermarks)"
+}`;
+
+  const modelosVision = [
+    'meta-llama/llama-4-scout-17b-16e-instruct',
+    'llama-3.2-90b-vision-preview'
+  ];
+
+  for (const modelo of modelosVision) {
+    try {
+      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        signal: AbortSignal.timeout(12000),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: modelo,
+          response_format: { type: 'json_object' },
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: promptAuditor },
+                { type: 'image_url', image_url: { url: imagenValidada.dataUrl } }
+              ]
+            }
+          ]
+        })
+      });
+
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const veredicto = JSON.parse(data?.choices?.[0]?.message?.content);
+      return veredicto;
+    } catch (e) {
+      continue;
+    }
+  }
+
+  // Si el servicio de visión no responde temporalmente, aprueba la imagen si pasó el filtro técnico de peso/resolución
+  return { aprobada: true, razon: 'Aprobada por validación técnica' };
+}
+
+async function buscarFotoRealEnWeb(consulta) {
+  if (!consulta || consulta.trim().length < 3) return '';
+  try {
+    // 1. Obtener token de búsqueda de imágenes
+    const initResp = await fetch(`https://duckduckgo.com/?q=${encodeURIComponent(consulta)}&iax=images&ia=images`, {
+      signal: AbortSignal.timeout(7000),
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    const initHtml = await initResp.text();
+    const vqdMatch = initHtml.match(/vqd=["']([^"']+)["']/i) || initHtml.match(/vqd=([0-9-]+)/i);
+
+    if (vqdMatch) {
+      const jsonUrl = `https://duckduckgo.com/i.js?l=ar-es&o=json&q=${encodeURIComponent(consulta)}&vqd=${vqdMatch[1]}&f=,,,,,&p=1`;
+      const imgResp = await fetch(jsonUrl, {
+        signal: AbortSignal.timeout(7000),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer': 'https://duckduckgo.com/'
+        }
+      });
+      const imgData = await imgResp.json();
+      const candidatas = (imgData.results || [])
+        .filter(r => (r.width || 0) >= 750 && (r.height || 0) >= 500)
+        .slice(0, 5);
+
+      for (const cand of candidatas) {
+        const validada = await descargarYValidarImagen(cand.image);
+        if (validada) return validada.url;
+      }
+    }
+  } catch (e) {
+    console.log('Búsqueda web de imágenes sin resultados directos, pasando a IA.');
+  }
+  return '';
+}
+
+async function auditarYResolverImagen({
+  fotoCandidataUrl,
+  esFotoManualDelEditor,
+  titulo,
+  bajada,
+  categoria,
+  busquedaWebSugerida,
+  promptIaSugerido
+}) {
+  // Si el director mandó una foto propia desde Telegram y no pidió .auditar, la respetamos
+  if (fotoCandidataUrl && esFotoManualDelEditor) {
+    return { urlFinal: fotoCandidataUrl, estadoAuditoria: 'Foto enviada por el editor' };
+  }
+
+  // 1. Auditar la imagen candidata (ej. extraída de un link o web)
+  if (fotoCandidataUrl) {
+    const validada = await descargarYValidarImagen(fotoCandidataUrl);
+    if (validada) {
+      const veredicto = await auditarCoherenciaConVision(validada, titulo, bajada, categoria);
+      if (veredicto.aprobada) {
+        return { urlFinal: fotoCandidataUrl, estadoAuditoria: `Aprobada por Auditor IA: ${veredicto.razon}` };
+      }
+      console.log(`Auditor IA rechazó imagen (${veredicto.razon}). Buscando reemplazo...`);
+      busquedaWebSugerida = veredicto.busqueda_web || busquedaWebSugerida;
+      promptIaSugerido = veredicto.prompt_ia_corregido || promptIaSugerido;
+    }
+  }
+
+  // 2. Plan B1: Buscar una foto real coherente en la web
+  const queryWeb = busquedaWebSugerida || titulo;
+  const fotoWebEncontrada = await buscarFotoRealEnWeb(queryWeb);
+  if (fotoWebEncontrada) {
+    return { urlFinal: fotoWebEncontrada, estadoAuditoria: `Reemplazada por foto real encontrada en web (${queryWeb})` };
+  }
+
+  // 3. Plan B2: Generar imagen HD coherente con IA (Pollinations Flux)
+  const fotoIA = construirUrlPollinationsHD(promptIaSugerido || 'Argentina Patagonia journalism news photography');
+  return { urlFinal: fotoIA, estadoAuditoria: 'Generada con IA coherente (Flux HD)' };
+}
+
+// ============================================================================
+// CEREBRO EDITORIAL CON GROQ
+// ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
   const apiKey = process.env.GROQ_API_KEY;
@@ -161,7 +363,8 @@ Devolvé ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
   "destacar": "Subcadena EXACTA dentro de 'titulo' (2 a 4 palabras clave) que irá resaltada",
   "bajada": "1 sola oración corta y contundente con el dato clave (máx 15 palabras)",
   "copy": "Texto 100% plano para Instagram y Facebook (SIN viñetas, SIN guiones, SIN asteriscos ni negritas), separado por \\n\\n:\\n1) TITULAR EN MAYÚSCULAS con 2 emojis.\\n2) 2 a 3 párrafos cortos y limpios explicando hechos y contexto.\\n3) Toda la cobertura en @elregistrosur\\n4) Pregunta de debate cerrada con: Te leemos en comentarios 👇\\n5) ---\\n6) 6 a 8 hashtags ESTRICTAMENTE EN MINÚSCULAS (#noticias #elregistrosur #caletaolivia #santacruz más específicos).",
-  "prompt_imagen_ia": "Descripción fotográfica realista en inglés (15 palabras, estilo fotoperiodismo editorial, sin texto ni letras)"
+  "busqueda_foto_web": "3 a 5 palabras clave en español para buscar en internet una foto real de prensa de esta noticia",
+  "prompt_imagen_ia": "Descripción fotográfica realista en inglés (18 palabras, estilo fotoperiodismo editorial, sin texto ni letras)"
 }`;
 
   const userMessage = esEdicion
@@ -199,15 +402,19 @@ Devolvé ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
   return JSON.parse(data?.choices?.[0]?.message?.content);
 }
 
+// ============================================================================
+// MOTOR GRÁFICO 2K RETINA (2160x2160 px reales)
+// ============================================================================
+
 async function renderizarFlyer({ categoria, titulo, destacar, bajada, fotoFinalUrl, expandirSinCloudinary, esUrgente, esHistoria = false }) {
   const alto = esHistoria ? 1920 : 1080;
   const browser = await puppeteer.launch({
     headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
   });
 
   const page = await browser.newPage();
-  await page.setViewport({ width: 1080, height: alto, deviceScaleFactor: 1 });
+  await page.setViewport({ width: 1080, height: alto, deviceScaleFactor: 2 });
 
   let htmlModificado = templateHtml
     .replace('FALLO DE LA CORTE: REHABILITAN LA VENTA DE TIERRAS A EXTRANJEROS TRAS EL DNU DE MILEI', (titulo || '').replace(/"/g, '&quot;'))
@@ -222,6 +429,9 @@ async function renderizarFlyer({ categoria, titulo, destacar, bajada, fotoFinalU
   await page.setContent(htmlModificado, { waitUntil: 'networkidle0' });
 
   await page.evaluate(({ url, expandir, modoUrgente, modoHistoria }) => {
+    document.body.style.webkitFontSmoothing = 'antialiased';
+    document.body.style.textRendering = 'optimizeLegibility';
+
     const canvas = document.querySelector('#canvas');
     if (canvas && modoHistoria) {
       canvas.style.height = '1920px';
@@ -230,6 +440,7 @@ async function renderizarFlyer({ categoria, titulo, destacar, bajada, fotoFinalU
 
     const imgs = document.querySelectorAll('#canvas img');
     imgs.forEach(img => {
+      img.style.imageRendering = '-webkit-optimize-contrast';
       if (img.src.includes('unsplash') || img.id.includes('bg') || img.className.includes('bg') || img.width > 400) {
         if (url) img.src = url;
         if (expandir && url) {
@@ -263,7 +474,7 @@ async function renderizarFlyer({ categoria, titulo, destacar, bajada, fotoFinalU
 async function enviarSugerenciaTelegram(imageBuffer, prefijo, copy) {
   const form = new FormData();
   form.append('chat_id', EDITOR_CHAT_ID);
-  form.append('photo', new Blob([imageBuffer], { type: 'image/png' }), 'flyer.png');
+  form.append('photo', new Blob([imageBuffer], { type: 'image/png' }), 'flyer_2k.png');
   form.append('caption', `${prefijo}\n\n${copy}`.slice(0, 1020));
 
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`, {
@@ -293,23 +504,32 @@ async function generarDatosRadar(forzar = false) {
   const contexto = await buscarContextoEnGoogleNews(elegida.titulo);
   const noticiaIA = await procesarNoticiaConIA(`URGENTE DETECTADO: ${elegida.titulo}`, contexto, false);
 
-  const seed = Math.floor(Math.random() * 999999);
-  const fotoIA = `https://image.pollinations.ai/prompt/${encodeURIComponent(noticiaIA.prompt_imagen_ia || 'Argentina Patagonia news journalism')}?width=1080&height=1080&nologo=true&seed=${seed}`;
+  const { urlFinal } = await auditarYResolverImagen({
+    fotoCandidataUrl: '',
+    esFotoManualDelEditor: false,
+    titulo: noticiaIA.titulo,
+    bajada: noticiaIA.bajada,
+    categoria: noticiaIA.categoria,
+    busquedaWebSugerida: noticiaIA.busqueda_foto_web,
+    promptIaSugerido: noticiaIA.prompt_imagen_ia
+  });
+
+  const fotoOptimizada = optimizarFotoConCloudinary(urlFinal, false, 1080);
 
   const imageBuffer = await renderizarFlyer({
     categoria: noticiaIA.categoria,
     titulo: noticiaIA.titulo,
     destacar: noticiaIA.destacar,
     bajada: noticiaIA.bajada,
-    fotoFinalUrl: fotoIA,
+    fotoFinalUrl: fotoOptimizada,
     expandirSinCloudinary: false,
     esUrgente: true,
     esHistoria: false
   });
 
   ultimoEstado = {
-    foto_url: fotoIA,
-    foto_original_url: fotoIA,
+    foto_url: fotoOptimizada,
+    foto_original_url: urlFinal,
     categoria: noticiaIA.categoria,
     titulo: noticiaIA.titulo,
     destacar: noticiaIA.destacar,
@@ -328,8 +548,7 @@ async function generarDatosRadar(forzar = false) {
 async function ejecutarParteClima() {
   const textoClima = await obtenerDatosClimaCaleta();
   const noticiaIA = await procesarNoticiaConIA(textoClima, '', false);
-  const seed = Math.floor(Math.random() * 999999);
-  const fotoClima = `https://image.pollinations.ai/prompt/${encodeURIComponent('Caleta Olivia Patagonia Argentina coastal city sea sky dramatic weather photography')}?width=1080&height=1080&nologo=true&seed=${seed}`;
+  const fotoClima = construirUrlPollinationsHD('Caleta Olivia Patagonia Argentina coastal city sea sky dramatic weather photography');
 
   const imageBuffer = await renderizarFlyer({
     categoria: 'CALETA OLIVIA / CLIMA',
@@ -360,7 +579,6 @@ async function ejecutarParteClima() {
   return { imageBuffer, noticiaIA };
 }
 
-// Tareas automáticas en segundo plano (Radar cada 30 min y Clima 08:30 AM)
 setInterval(async () => {
   try {
     const radar = await generarDatosRadar(false);
@@ -398,12 +616,10 @@ app.post('/generar', async (req, res) => {
     let copy = '';
     texto_crudo = (texto_crudo || '').trim();
 
-    // 1. Detectar si el mensaje empieza con un .comando
     const matchComando = texto_crudo.match(/^\.([a-zA-ZáéíóúñÁÉÍÓÚÑ]+)\s*([\s\S]*)$/);
     const comando = matchComando ? matchComando[1].toLowerCase() : '';
     const argumento = matchComando ? matchComando[2].trim() : texto_crudo;
 
-    // 2. Resolver si adjuntaron foto o audio de voz en Telegram
     const entradaArchivo = foto_url || file_path || file_id || '';
     const archivoTelegram = await resolverArchivoTelegram(entradaArchivo);
     const esAudio = /\.(oga|ogg|mp3|m4a|wav|opus)$/i.test(archivoTelegram.path) || archivoTelegram.path.includes('voice/');
@@ -416,10 +632,8 @@ app.post('/generar', async (req, res) => {
       nuevaFotoTelegram = archivoTelegram.url;
     }
 
-    // --- EJECUCIÓN DE .COMANDOS DIRECTOS ---
-
     if (comando === 'comandos' || comando === 'ayuda') {
-      const textoAyuda = `🤖 COMANDOS DE EL REGISTRO SUR:\n\n.urgente → Pone el flyer en rojo alerta (solo o con noticia)\n.normal → Vuelve el flyer al celeste clásico\n.editar [cambio] → Modifica textos del último flyer\n.expandir → Ajusta la foto entera sin recortar bordes\n.ia [descripción] → Genera un fondo nuevo con IA\n.historia → Adapta el último flyer a vertical 9:16\n.clima → Genera el parte de clima y viento de Caleta Olivia\n.radar → Busca una noticia urgente ahora mismo\n.publicar → Sube el último borrador a Facebook e Instagram`;
+      const textoAyuda = `🤖 COMANDOS DE EL REGISTRO SUR:\n\n.urgente → Pone el flyer en rojo alerta (solo o con noticia)\n.normal → Vuelve el flyer al celeste clásico\n.editar [cambio] → Modifica textos del último flyer\n.auditar → Verifica la foto actual o busca otra coherente en la web/IA\n.expandir → Ajusta la foto entera sin recortar bordes\n.ia [descripción] → Genera un fondo nuevo en HD con IA\n.historia → Adapta el último flyer a vertical 9:16\n.clima → Genera el parte de clima y viento de Caleta Olivia\n.radar → Busca una noticia urgente ahora mismo\n.publicar → Sube el último borrador a Facebook e Instagram`;
       await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -457,6 +671,46 @@ app.post('/generar', async (req, res) => {
       });
     }
 
+    if ((comando === 'auditar' || comando === 'comandoauditar') && ultimoEstado.titulo) {
+      const { urlFinal, estadoAuditoria } = await auditarYResolverImagen({
+        fotoCandidataUrl: ultimoEstado.foto_original_url,
+        esFotoManualDelEditor: false,
+        titulo: ultimoEstado.titulo,
+        bajada: ultimoEstado.bajada,
+        categoria: ultimoEstado.categoria,
+        busquedaWebSugerida: ultimoEstado.titulo,
+        promptIaSugerido: ultimoEstado.prompt_imagen_ia
+      });
+
+      const fotoOptimizada = optimizarFotoConCloudinary(urlFinal, false, 1080);
+      const imageBuffer = await renderizarFlyer({
+        categoria: ultimoEstado.categoria,
+        titulo: ultimoEstado.titulo,
+        destacar: ultimoEstado.destacar,
+        bajada: ultimoEstado.bajada,
+        fotoFinalUrl: fotoOptimizada,
+        expandirSinCloudinary: false,
+        esUrgente: ultimoEstado.urgente,
+        esHistoria: false
+      });
+
+      ultimoEstado.foto_url = fotoOptimizada;
+      ultimoEstado.foto_original_url = urlFinal;
+      ultimoEstado.imagen_buffer = imageBuffer;
+
+      return res.json({
+        ok: true,
+        auditoria: estadoAuditoria,
+        categoria: ultimoEstado.categoria,
+        titulo: ultimoEstado.titulo,
+        destacar: ultimoEstado.destacar,
+        bajada: ultimoEstado.bajada,
+        copy: ultimoEstado.copy,
+        url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
+        imagen_base64: imageBuffer.toString('base64')
+      });
+    }
+
     if ((comando === 'historia' || comando === 'comandohistoria') && ultimoEstado.titulo) {
       const historiaBuffer = await renderizarFlyer({
         categoria: ultimoEstado.categoria,
@@ -483,9 +737,7 @@ app.post('/generar', async (req, res) => {
     }
 
     if ((comando === 'expandir' || comando === 'comandoexpandir') && ultimoEstado.titulo) {
-      const fotoExpandida = process.env.CLOUDINARY_CLOUD_NAME
-        ? aplicarExpansorCloudinary(ultimoEstado.foto_original_url, 1080)
-        : ultimoEstado.foto_original_url;
+      const fotoExpandida = optimizarFotoConCloudinary(ultimoEstado.foto_original_url, true, 1080);
 
       const imageBuffer = await renderizarFlyer({
         categoria: ultimoEstado.categoria,
@@ -541,16 +793,18 @@ app.post('/generar', async (req, res) => {
     }
 
     if ((comando === 'normal' || comando === 'comandonormal') && ultimoEstado.titulo) {
+      const fotoMejorada = optimizarFotoConCloudinary(ultimoEstado.foto_original_url, false, 1080);
       const imageBuffer = await renderizarFlyer({
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        fotoFinalUrl: ultimoEstado.foto_original_url,
+        fotoFinalUrl: fotoMejorada,
         expandirSinCloudinary: false,
         esUrgente: false,
         esHistoria: false
       });
+      ultimoEstado.foto_url = fotoMejorada;
       ultimoEstado.urgente = false;
       ultimoEstado.fill_mode = 'cover';
       ultimoEstado.imagen_buffer = imageBuffer;
@@ -569,10 +823,9 @@ app.post('/generar', async (req, res) => {
 
     if ((comando === 'ia' || comando === 'comandoia') && ultimoEstado.titulo) {
       const promptFinal = argumento
-        ? `${argumento}, photorealistic news journalism photography, no text`
+        ? `${argumento}, photorealistic news journalism photography, sharp focus, no text`
         : ultimoEstado.prompt_imagen_ia;
-      const seed = Math.floor(Math.random() * 999999);
-      const nuevaFotoIA = `https://image.pollinations.ai/prompt/${encodeURIComponent(promptFinal)}?width=1080&height=1080&nologo=true&seed=${seed}`;
+      const nuevaFotoIA = construirUrlPollinationsHD(promptFinal);
 
       const imageBuffer = await renderizarFlyer({
         categoria: ultimoEstado.categoria,
@@ -601,8 +854,7 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // --- PROCESAMIENTO DE NOTICIA NUEVA O .EDITAR ---
-
+    // Procesamiento de noticia nueva o .editar
     let textoParaProcesar = comando ? argumento : texto_crudo;
     const urlDetectada = textoParaProcesar.match(/https?:\/\/[^\s]+/i)?.[0];
     let fotoDeLink = '';
@@ -620,6 +872,7 @@ app.post('/generar', async (req, res) => {
 
     const contextoWeb = await buscarContextoEnGoogleNews(textoParaProcesar);
     let promptImagenIA = ultimoEstado.prompt_imagen_ia;
+    let busquedaFotoWeb = '';
 
     if (textoParaProcesar.length > 0) {
       const noticiaIA = await procesarNoticiaConIA(textoParaProcesar, contextoWeb, esEdicion);
@@ -629,20 +882,29 @@ app.post('/generar', async (req, res) => {
       bajada = noticiaIA.bajada || ultimoEstado.bajada || '';
       copy = noticiaIA.copy || '';
       promptImagenIA = noticiaIA.prompt_imagen_ia || 'journalism news photography Argentina Patagonia';
+      busquedaFotoWeb = noticiaIA.busqueda_foto_web || titulo;
     }
 
     let fotoBase = fotoNuevaRecibida || (esEdicion ? ultimoEstado.foto_original_url : '');
-    let usarModoExpandido = fill_mode === 'contain' || (esEdicion && ultimoEstado.fill_mode === 'contain');
+    let estadoAuditoria = 'Sin auditoría';
 
-    if (!fotoBase && promptImagenIA) {
-      const seed = Math.floor(Math.random() * 999999);
-      fotoBase = `https://image.pollinations.ai/prompt/${encodeURIComponent(promptImagenIA)}?width=1080&height=1080&nologo=true&seed=${seed}`;
-      usarModoExpandido = false;
+    // Ejecuta el Auditor Visual de IA si no es una edición de texto puro
+    if (!esEdicion || !fotoBase) {
+      const resultadoAuditoria = await auditarYResolverImagen({
+        fotoCandidataUrl: fotoBase,
+        esFotoManualDelEditor: Boolean(nuevaFotoTelegram),
+        titulo,
+        bajada,
+        categoria,
+        busquedaWebSugerida: busquedaFotoWeb,
+        promptIaSugerido: promptImagenIA
+      });
+      fotoBase = resultadoAuditoria.urlFinal;
+      estadoAuditoria = resultadoAuditoria.estadoAuditoria;
     }
 
-    let fotoFinalUrl = usarModoExpandido && process.env.CLOUDINARY_CLOUD_NAME
-      ? aplicarExpansorCloudinary(fotoBase, 1080)
-      : fotoBase;
+    const usarModoExpandido = fill_mode === 'contain' || (esEdicion && ultimoEstado.fill_mode === 'contain');
+    const fotoFinalUrl = optimizarFotoConCloudinary(fotoBase, usarModoExpandido, 1080);
 
     const imageBuffer = await renderizarFlyer({
       categoria,
@@ -673,6 +935,7 @@ app.post('/generar', async (req, res) => {
     return res.json({
       ok: true,
       es_edicion: esEdicion,
+      auditoria: estadoAuditoria,
       categoria,
       titulo,
       destacar,
@@ -715,4 +978,4 @@ app.get('/ultimo-borrador', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Súper Asistente de El Registro Sur listo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Súper Asistente 2K + Auditor IA de El Registro Sur listo en puerto ${PORT}`));
