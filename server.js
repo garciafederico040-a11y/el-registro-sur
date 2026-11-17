@@ -90,7 +90,7 @@ let ultimoComandoTimestamp = 0;
 let indiceClaveGroq = 0;
 let indiceClaveSerper = 0;
 
-app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Serper Dual + Editor Multicapa activo'));
+app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Serper Dual + Actualidad Continua activo'));
 
 const EMOJIS_SEGUROS_META = new Set([
   '🚨', '🔴', '🟠', '🟡', '🚧', '🚔', '🚒', '🚑', '🛑',
@@ -122,7 +122,7 @@ const PREFIJOS_COMPUESTOS = new Set([
   'CASA', 'CORTE', 'BANCO', 'RIESGO', 'DÓLAR', 'DOLAR', 'RUTA',
   'SERVICIO', 'SERVICIOS', 'VIALIDAD', 'POLICÍA', 'POLICIA', 'ARMADA',
   'GRAN', 'JAVIER', 'CLAUDIO', 'CRISTINA', 'AXEL', 'PABLO', 'FERNANDO',
-  'LUIS', 'JUAN', 'MARÍA', 'MARIA', 'LA', 'EL', 'LOS', 'LAS', '28', 'VEINTIOCHO', 'PASO', 'REFORMA'
+  'LUIS', 'JUAN', 'MARÍA', 'MARIA', 'LA', 'EL', 'LOS', 'LAS', '28', 'VEINTIOCHO', 'PASO', 'REFORMA', 'PAPA', 'LEÓN', 'LEON'
 ]);
 
 const SUFIJOS_COMPUESTOS = new Set([
@@ -131,7 +131,7 @@ const SUFIJOS_COMPUESTOS = new Set([
   'BUENA', 'RIVADAVIA', 'CRUZ', 'FUEGO', 'AIRES', 'BLANCA', 'ARENAS',
   'SECO', 'GREGORES', 'JORGE', 'PAULA', 'SANTOS', 'ROSADA', 'SUPREMA',
   'CENTRAL', 'PAÍS', 'PAIS', 'BLUE', 'OFICIAL', 'MILEI', 'VIDAL',
-  'KIRCHNER', 'KICILLOF', 'GRASSO', 'CARRIZO', 'COTILLO', 'ELECTORAL', 'JUDICIAL', 'LABORAL'
+  'KIRCHNER', 'KICILLOF', 'GRASSO', 'CARRIZO', 'COTILLO', 'ELECTORAL', 'JUDICIAL', 'LABORAL', 'XIV', 'PREVOST'
 ]);
 
 function limpiarPalabraSignos(p) {
@@ -387,7 +387,7 @@ function obtenerListaClavesSerper() {
   return [...new Set([...desdeEnv, ...CLAVES_SERPER_RESPALDO].filter(Boolean))];
 }
 
-// Rotador automático de cuentas de Serper.dev (cambia a la llave 2 si la llave 1 se queda sin créditos)
+// Rotador automático de cuentas de Serper.dev (salta a la siguiente llave si una se queda sin créditos)
 async function llamarSerperApi(endpoint, payload) {
   const claves = obtenerListaClavesSerper();
   for (let i = 0; i < claves.length; i++) {
@@ -544,26 +544,37 @@ function obtenerDimensionesBuffer(buffer) {
   return null;
 }
 
-// AUDITOR VISUAL CON DETECTOR DE ENCUADRE (Gemini 2.5 Flash + Llama 4 Scout)
+// AUDITOR VISUAL CON FECHA DINÁMICA Y DETECTOR DE VIGENCIA TEMPORAL
 async function auditarFotoConVisionIA(dataUrl, titulo, bajada, categoria = '', tituloDescriptivoFoto = '') {
-  const promptVision = `Sos el Director de Fotografía de 'El Registro Sur'. Mirá esta imagen y evaluá si sirve para esta noticia:
+  const ahora = new Date();
+  const anioActual = ahora.getFullYear();
+  const fechaHoy = ahora.toLocaleDateString('es-AR', {
+    timeZone: 'America/Argentina/Rio_Gallegos',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
+  });
+
+  const promptVision = `Sos el Director de Fotografía de 'El Registro Sur'. Hoy es ${fechaHoy} (Año ${anioActual}).
+Mirá esta imagen y evaluá si sirve para ilustrar esta noticia RECIENTE:
 SECCIÓN: "${categoria}"
 TITULAR: "${titulo}"
 BAJADA: "${bajada}"
-DESCRIPCIÓN DE ORIGEN: "${tituloDescriptivoFoto}"
+DESCRIPCIÓN DE ORIGEN DE LA FOTO: "${tituloDescriptivoFoto}"
 
 REGLAS DE RECHAZO ESTRICTO ("aprobada": false):
-1. RECHAZAR si tiene bordes blancos/negros gigantes alrededor, si está pixelada o si tiene marcas de agua grandes de otros medios.
-2. RECHAZAR si muestra a una persona o tema ajeno a la noticia (ej: el Papa en una nota sobre las PASO en el Senado, o un paisaje vacío de montañas en una nota política).
-3. RECHAZAR si es un videojuego, meme, caricatura o tiene caras deformadas por IA.
-4. Si es APROBADA ("aprobada": true), indicá en "foco_vertical" dónde están las caras o el sujeto principal ("15%" si están arriba, "30%" en el tercio superior, "50%" en el centro) para no cortar cabezas.
+1. ACTUALIDAD Y VIGENCIA (${anioActual}): Rechazar inmediatamente si la foto muestra a exfuncionarios, expresidentes, figuras ya fallecidas (como el Papa Francisco cuando la noticia habla del Papa actual en ${anioActual}), exentrenadores o eventos de años pasados cuando la noticia habla de un hecho actual en presente. Guiate siempre por los nombres propios actuales y el año ${anioActual}, nunca por memoria vieja.
+2. RECHAZAR si tiene bordes blancos/negros gigantes alrededor, si está pixelada o si tiene marcas de agua grandes de otros medios.
+3. RECHAZAR si muestra a una persona o tema ajeno a la noticia o un paisaje vacío de montañas en una nota política/económica.
+4. RECHAZAR si es un videojuego, meme, caricatura o tiene caras deformadas por IA.
+5. Si es APROBADA ("aprobada": true), indicá en "foco_vertical" dónde están las caras o el sujeto principal ("15%" si están arriba, "25%" en el tercio superior, "50%" en el centro) para no cortar cabezas.
 
 Devolvé SOLO este JSON:
 {
   "aprobada": true,
   "motivo": "Explicación breve",
   "foco_vertical": "20%",
-  "busqueda_corregida": "Consulta física concreta"
+  "busqueda_corregida": "Nombre propio actual exacto del protagonista + lugar + ${anioActual}"
 }`;
 
   const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
@@ -628,7 +639,7 @@ Devolvé SOLO este JSON:
     if (tituloDescriptivoFoto && !tituloDescriptivoFoto.startsWith('http')) {
       return await llamarGroqChat([{
         role: 'user',
-        content: `Sos el Auditor Fotográfico de un diario. Evaluá si una foto titulada "${tituloDescriptivoFoto}" es coherente para la noticia "${categoria}: ${titulo} - ${bajada}". Rechazá si habla de otro evento ajeno o paisaje sin relación. Devolvé JSON: {"aprobada": true o false, "foco_vertical": "20%", "busqueda_corregida": "consulta mejorada"}`
+        content: `Sos el Auditor Fotográfico de un diario en el año ${anioActual}. Evaluá si una foto titulada "${tituloDescriptivoFoto}" es actual y coherente para la noticia "${categoria}: ${titulo} - ${bajada}". Rechazá si muestra figuras fallecidas, exfuncionarios de años pasados, otro evento ajeno o paisaje sin relación. Devolvé JSON: {"aprobada": true o false, "foco_vertical": "20%", "busqueda_corregida": "consulta mejorada con nombre propio actual ${anioActual}"}`
       }]);
     }
     return { aprobada: true, foco_vertical: '20%' };
@@ -1011,6 +1022,19 @@ function optimizarFotoConCloudinary(fotoUrl, expandir = false, alto = 1080) {
   return `https://res.cloudinary.com/${cloudName}/image/fetch/c_fill,g_auto:faces,w_1440,h_${hFinal},e_improve,e_sharpen:80,f_jpg,q_92/${encodeURIComponent(fotoUrl)}`;
 }
 
+// Detecta automáticamente si el link de una foto pertenece a un archivo de años anteriores (ej: /2022/, /2023/, /2024/)
+function esUrlDeArchivoViejo(url) {
+  const anioActual = new Date().getFullYear();
+  const matchesAnio = [...String(url || '').matchAll(/[\/\-_](20[12][0-9])[\/\-_]/g)];
+  for (const m of matchesAnio) {
+    const anioFoto = parseInt(m[1], 10);
+    if (anioFoto >= 2010 && anioFoto <= anioActual - 2) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Descarga y verifica en 0ms las dimensiones binarias reales (>=580x330px)
 async function descargarYValidarImagen(url, timeoutMs = 5500, tituloDescriptivo = '') {
   if (!url) return null;
@@ -1063,24 +1087,42 @@ async function descargarYValidarImagen(url, timeoutMs = 5500, tituloDescriptivo 
   }
 }
 
-// Buscador Oficial Google Images HD vía Serper.dev (con rotación de 2 llaves) + Wikipedia HD + Bing Large Filter
+// Buscador Oficial Google Images HD vía Serper.dev (priorizando último mes qdr:m + año actual)
 async function obtenerCandidatasFotoWeb(consulta) {
   if (!consulta || consulta.trim().length < 3) return [];
+  const anioActual = new Date().getFullYear();
   const consultaLimpia = consulta.replace(/orcolandia|kukardo|mandril|casta/gi, '').trim();
   const itemsEncontrados = [];
 
-  // 1. MOTOR PRINCIPAL: Serper.dev (Google Images Oficial HD con rotación de cuentas)
-  const dataS = await llamarSerperApi('images', {
-    q: `${consultaLimpia} Argentina`,
+  // 1A. Primero busca fotos HD subidas en el ÚLTIMO MES (qdr:m) para captar el hecho reciente real
+  let dataS = await llamarSerperApi('images', {
+    q: `${consultaLimpia} ${anioActual}`,
     gl: 'ar',
     hl: 'es',
     num: 10,
-    tbs: 'isz:l,itp:photo'
+    tbs: 'isz:l,itp:photo,qdr:m'
   });
+
+  // 1B. Si es un edificio/lugar sin fotos nuevas este mes, busca en el último año (qdr:y)
+  if (!dataS?.images || dataS.images.length < 2) {
+    dataS = await llamarSerperApi('images', {
+      q: `${consultaLimpia} Argentina ${anioActual}`,
+      gl: 'ar',
+      hl: 'es',
+      num: 10,
+      tbs: 'isz:l,itp:photo,qdr:y'
+    });
+  }
 
   if (dataS && Array.isArray(dataS.images)) {
     for (const img of dataS.images) {
-      if (img.imageUrl && (img.imageWidth || 800) >= 650 && !DOMINIOS_PROHIBIDOS_IMG.test(img.imageUrl) && !DOMINIOS_PROHIBIDOS_IMG.test(img.title || '')) {
+      if (
+        img.imageUrl &&
+        (img.imageWidth || 800) >= 650 &&
+        !esUrlDeArchivoViejo(img.imageUrl) &&
+        !DOMINIOS_PROHIBIDOS_IMG.test(img.imageUrl) &&
+        !DOMINIOS_PROHIBIDOS_IMG.test(img.title || '')
+      ) {
         itemsEncontrados.push({ url: img.imageUrl, desc: img.title || consultaLimpia });
       }
     }
@@ -1106,10 +1148,10 @@ async function obtenerCandidatasFotoWeb(consulta) {
     } catch (e) {}
   }
 
-  // 3. MOTOR DE RESPALDO: Bing Large Photo Filter (sin bing.com/th)
+  // 3. MOTOR DE RESPALDO: Bing Large Photo Filter (con año actual y filtro anti-archivo viejo)
   if (itemsEncontrados.length < 3) {
     try {
-      const bingUrl = `https://www.bing.com/images/async?q=${encodeURIComponent(consultaLimpia + ' Argentina')}&qft=+filterui:imagesize-large+filterui:photo-photo&first=0&count=12&mmasync=1`;
+      const bingUrl = `https://www.bing.com/images/async?q=${encodeURIComponent(consultaLimpia + ' ' + anioActual)}&qft=+filterui:imagesize-large+filterui:photo-photo&first=0&count=12&mmasync=1`;
       const resp = await fetch(bingUrl, {
         signal: AbortSignal.timeout(4500),
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
@@ -1123,7 +1165,14 @@ async function obtenerCandidatasFotoWeb(consulta) {
       for (const m of matches) {
         const murl = m[1];
         const tituloImg = m[2] || consultaLimpia;
-        if (murl && !vistos.has(murl) && /\.(?:jpg|jpeg|png|webp)(?:\?|$)/i.test(murl) && !DOMINIOS_PROHIBIDOS_IMG.test(murl) && !DOMINIOS_PROHIBIDOS_IMG.test(tituloImg)) {
+        if (
+          murl &&
+          !vistos.has(murl) &&
+          !esUrlDeArchivoViejo(murl) &&
+          /\.(?:jpg|jpeg|png|webp)(?:\?|$)/i.test(murl) &&
+          !DOMINIOS_PROHIBIDOS_IMG.test(murl) &&
+          !DOMINIOS_PROHIBIDOS_IMG.test(tituloImg)
+        ) {
           vistos.add(murl);
           itemsEncontrados.push({ url: murl, desc: tituloImg });
         }
@@ -1163,6 +1212,9 @@ async function auditarYResolverImagen({
           esFotoRealVerificada: true
         };
       }
+      if (auditoria.busqueda_corregida) {
+        busquedasSugeridas.unshift(auditoria.busqueda_corregida);
+      }
     }
   }
 
@@ -1194,15 +1246,29 @@ async function auditarYResolverImagen({
 }
 
 // ============================================================================
-// CEREBRO EDITORIAL + PLANIFICADOR DE COMPOSICIÓN VISUAL
+// CEREBRO EDITORIAL CON ACTUALIZACIÓN TEMPORAL DINÁMICA
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
   const textoRecortado = String(textoCrudo || '').slice(0, 2400);
   const contextoRecortado = String(contextoWeb || '').slice(0, 850);
+  const ahora = new Date();
+  const anioActual = ahora.getFullYear();
+  const fechaHoy = ahora.toLocaleDateString('es-AR', {
+    timeZone: 'America/Argentina/Rio_Gallegos',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
+  });
 
   const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), medio periodístico digital con sede en Caleta Olivia, Santa Cruz, que cubre noticias locales, provinciales y nacionales de Argentina.
+FECHA ACTUAL EN VIVO: Hoy es ${fechaHoy} (Año ${anioActual}).
 IDIOMA: Castellano de Argentina 100% natural, fluido y sin errores ortográficos (escribí siempre "elogió", jamás "elogó").
+
+REGLA DE ACTUALIDAD CONTINUA (PROHIBIDO USAR MEMORIA DESACTUALIZADA):
+- Los cargos públicos, presidentes, ministros, gobernadores, intendentes, autoridades religiosas (como el Papa, que desde 2025 es León XIV tras el fallecimiento de Francisco) y figuras deportivas cambian con el tiempo.
+- NUNCA asumas quién ocupa un cargo usando tu memoria vieja de entrenamiento: extraé SIEMPRE el nombre y apellido actual que figura en el texto de la noticia y en la verificación cruzada de medios del día.
+- En "busqueda_foto_web", escribí SIEMPRE el nombre propio exacto de la persona actual en ${anioActual} + lugar/institución + ${anioActual} (jamás pongas solo el cargo genérico como "El Papa" o "El Ministro", poné su nombre propio actual completo).
 
 REGLA DE ORO DE VERIFICACIÓN Y GEOGRAFÍA:
 - VERIFICACIÓN ESTRICTA: Usá ÚNICAMENTE los hechos, lugares, fechas, nombres y cifras confirmados en el texto recibido. PROHIBIDO inventar reuniones o licitaciones que no figuren en el texto.
@@ -1226,9 +1292,9 @@ Redactá una NOTA PERIODÍSTICA COMPLETA Y DESGLOSADA POR PUNTOS en texto plano 
 6. PREGUNTA DE DEBATE O CIERRE DINÁMICO + 👇: "¿...? Te leemos en comentarios 👇".
 7. BLOQUE DE 8 A 10 HASHTAGS EN MINÚSCULAS.
 
-REGLA 4 — BÚSQUEDA FOTOGRÁFICA ESCALONADA Y SEGUNDA FOTO PARA COMPOSICIÓN:
-- "busqueda_foto_web": El escenario o protagonista principal del hecho actual (ej: "Senado Congreso de la Nacion Argentina recinto" o "Claudio Vidal gobernador Santa Cruz").
-- "busqueda_foto_secundaria": Un segundo protagonista o detalle clave para armar los modos Duelo 2 Fotos o Lupa PIP (ej: "Casa Rosada Buenos Aires" o "YPF pozo petrolero Santa Cruz").
+REGLA 4 — BÚSQUEDA FOTOGRÁFICA ESCALONADA Y RECIENTE (${anioActual}):
+- "busqueda_foto_web": Nombre propio actual exacto del protagonista o escenario + lugar + ${anioActual} (ej: "Papa Leon XIV Vaticano ${anioActual}" o "Claudio Vidal gobernador Santa Cruz ${anioActual}").
+- "busqueda_foto_secundaria": Segundo protagonista con su nombre propio actual o escenario complementario para collage/lupa.
 - "busqueda_foto_institucional": Edificio oficial o lugar físico del hecho.
 
 LISTA BLANCA DE EMOJIS PERMITIDOS EN "copy":
@@ -1246,8 +1312,8 @@ Devolvé ÚNICAMENTE este objeto JSON plano (sin arrays adentro):
   "autor_cita": "Nombre y cargo si hay cita, o vacío",
   "fuente_credito": "Crédito corto en MAYÚSCULAS",
   "copy": "Nota periodística extensa y verificada (1300 a 2050 caracteres, máximo 2200) con la estructura: TITULAR + 2 emojis\\n\\nCopete inicial\\n\\nSubtema 1: Desarrollo...\\n\\nSubtema 2: Desarrollo...\\n\\nSubtema 3: Desarrollo...\\n\\nPárrafo de resolución.\\n\\nToda la cobertura en @elregistrosur.\\n\\n¿Pregunta de debate? Te leemos en comentarios 👇\\n\\n#hashtags",
-  "busqueda_foto_web": "Protagonista o escenario principal de la noticia",
-  "busqueda_foto_secundaria": "Segundo protagonista o escenario complementario para collage/lupa",
+  "busqueda_foto_web": "Nombre propio actual del protagonista o escenario + ${anioActual}",
+  "busqueda_foto_secundaria": "Segundo protagonista actual o escenario complementario",
   "busqueda_foto_institucional": "Edificio oficial o escenario físico real",
   "prompt_imagen_ia": "Wide angle exterior photojournalism prompt in English showing the real physical building or setting, NO PEOPLE, NO FACES, NO TEXT"
 }`;
@@ -1260,7 +1326,7 @@ Devolvé ÚNICAMENTE este objeto JSON plano (sin arrays adentro):
         bajada: ultimoEstado.bajada,
         copy: String(ultimoEstado.copy || '').slice(0, 1400)
       })}\n\nCambio pedido: "${textoRecortado}". Devolvé JSON verificado con "descartar": false.`
-    : `Noticia recibida:\n"${textoRecortado}"\n${contextoRecortado}\nVerificá los datos reales sin inventar reuniones ni lugares no mencionados y redactá el JSON completo.`;
+    : `Noticia recibida (${fechaHoy}):\n"${textoRecortado}"\n${contextoRecortado}\nVerificá los datos reales actuales de ${anioActual} sin usar memoria vieja para cargos públicos/religiosos y redactá el JSON completo.`;
 
   const parsed = await llamarGroqChat([
     { role: 'system', content: systemPrompt },
@@ -2461,7 +2527,7 @@ app.post('/generar', async (req, res) => {
         titulo: ultimoEstado.titulo,
         bajada: ultimoEstado.bajada,
         categoria: ultimoEstado.categoria,
-        busquedasSugeridas: [argumento || ultimoEstado.busqueda_foto_secundaria || ultimoEstado.titulo, ultimoEstado.destacar],
+        busquedasSugeridas: [argumento || ultimoEstado.busqueda_foto_web || ultimoEstado.titulo, ultimoEstado.busqueda_foto_secundaria],
         promptIaSugerido: ultimoEstado.prompt_imagen_ia,
         forzarBusquedaNueva: true
       });
@@ -2851,4 +2917,4 @@ app.get('/ultimo-borrador', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`El Registro Sur 2K + Serper Dual + Editor Multicapa listo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`El Registro Sur 2K + Serper Dual + Actualidad Continua listo en puerto ${PORT}`));
