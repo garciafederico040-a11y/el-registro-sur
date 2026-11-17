@@ -10,6 +10,7 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 const templateHtml = fs.readFileSync(path.join(__dirname, 'template.html'), 'utf-8');
 const TELEGRAM_TOKEN = '9253246227:AAFaJzhi3uxaoWLuxg9E0HZ4WfT0YdPts6w';
 const EDITOR_CHAT_ID = '6008268963';
+const RUTA_CACHE_ESTADO = '/tmp/ultimo_estado_ers.json';
 
 const CLAVE_GROQ_RESPALDO = ['gsk', 'C9XrhxVzidzc2quADlxqWGdyb3FYYXpRiM09cKPoYBu0jkb3QE8v'].join('_');
 const CLAVES_SERPER_RESPALDO = [
@@ -17,7 +18,6 @@ const CLAVES_SERPER_RESPALDO = [
   ['1d4e4df6445b6228a0889', '4441911bc5f9ac2d4aa'].join('')
 ];
 
-// 33 Fuentes Web (Caleta Olivia, Santa Cruz, Petróleo/Energía, Nacionales y Espectáculos)
 const FUENTES_RSS_RADAR = [
   { url: 'https://laopinionaustral.com.ar/feed/', medio: 'LA OPINIÓN AUSTRAL', categoria: 'regional' },
   { url: 'https://infocaleta.com/v2/feed/', medio: 'INFOCALETA', categoria: 'regional' },
@@ -59,6 +59,7 @@ let ultimoEstado = {
   foto_url: '',
   foto_original_url: '',
   foto_secundaria_url: '',
+  fotos_usadas: [],
   foco_vertical: '20%',
   categoria: '',
   titulo: '',
@@ -83,12 +84,49 @@ let ultimoEstado = {
 const colaBorradores = [];
 let ultimasTopCandidatas = [];
 
+function persistirEstadoEnDisco(estado) {
+  try {
+    if (!estado || !estado.titulo) return;
+    const copiaLiviana = {
+      ...estado,
+      imagen_base64_cache: estado.imagen_buffer ? estado.imagen_buffer.toString('base64') : '',
+      imagen_buffer: null,
+      historia_buffer: null,
+      carrusel_buffers: []
+    };
+    fs.writeFileSync(RUTA_CACHE_ESTADO, JSON.stringify(copiaLiviana), 'utf-8');
+  } catch (e) {}
+}
+
+function cargarEstadoDesdeDisco() {
+  try {
+    if (fs.existsSync(RUTA_CACHE_ESTADO)) {
+      const raw = JSON.parse(fs.readFileSync(RUTA_CACHE_ESTADO, 'utf-8'));
+      if (raw && raw.titulo) {
+        ultimoEstado = {
+          ...ultimoEstado,
+          ...raw,
+          fotos_usadas: Array.isArray(raw.fotos_usadas) ? raw.fotos_usadas : [],
+          imagen_buffer: raw.imagen_base64_cache ? Buffer.from(raw.imagen_base64_cache, 'base64') : null,
+          historia_buffer: null,
+          carrusel_buffers: []
+        };
+      }
+    }
+  } catch (e) {}
+}
+cargarEstadoDesdeDisco();
+
 function guardarEnColaBorradores(nuevoEstado) {
   if (ultimoEstado && ultimoEstado.imagen_buffer && ultimoEstado.titulo) {
     colaBorradores.unshift({ ...ultimoEstado });
     if (colaBorradores.length > 5) colaBorradores.pop();
   }
+  if (!Array.isArray(nuevoEstado.fotos_usadas)) {
+    nuevoEstado.fotos_usadas = [nuevoEstado.foto_original_url, nuevoEstado.foto_url].filter(Boolean);
+  }
   ultimoEstado = nuevoEstado;
+  persistirEstadoEnDisco(ultimoEstado);
 }
 
 const noticiasEnviadasRadar = new Set();
@@ -100,7 +138,7 @@ let ultimoComandoTimestamp = 0;
 let indiceClaveGroq = 0;
 let indiceClaveSerper = 0;
 
-app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Radar Web y Redes activo'));
+app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Carrusel Editorial Agencia activo'));
 
 const EMOJIS_SEGUROS_META = new Set([
   '🚨', '🔴', '🟠', '🟡', '🚧', '🚔', '🚒', '🚑', '🛑',
@@ -153,7 +191,6 @@ function limpiarPalabraSignos(p) {
   return String(p || '').replace(/^[^A-ZÁÉÍÓÚÜÑ0-9]+|[^A-ZÁÉÍÓÚÜÑ0-9]+$/gi, '').toUpperCase();
 }
 
-// Corrector ortográfico + Purgador automático de lenguaje de gacetilla
 function depurarEstiloPeriodistico(texto) {
   if (!texto) return '';
   return String(texto)
@@ -170,6 +207,27 @@ function depurarEstiloPeriodistico(texto) {
     .replace(/\bcelebraron la\b/gi, 'destacaron la')
     .replace(/\ben el marco de una\b/gi, 'durante una')
     .replace(/\ben el día de la fecha\b/gi, 'hoy');
+}
+
+function extraerDatoClaveAutomatico(estado) {
+  if (estado.dato_clave && estado.dato_clave.trim().length > 1 && !/DATO CLAVE/i.test(estado.dato_clave)) {
+    return estado.dato_clave.trim().toUpperCase();
+  }
+  const fuente = `${estado.titulo || ''} ${estado.bajada || ''}`;
+  const matchMonto = fuente.match(/(?:USD|U\$S|\$)\s*\d+(?:[.,]\d+)?(?:\s*(?:MILLONES|MIL|BILLONES|M))?|\b\d+(?:[.,]\d+)?\s*(?:%|POR CIENTO|FAMILIAS|VOTOS|KM\/H|MILLONES|HORAS|DÍAS|LOCALIDADES|BARRIOS|EMPLEOS|POZOS|MW)\b/i);
+  if (matchMonto) return matchMonto[0].toUpperCase();
+  if (estado.destacar && estado.destacar.length <= 18) return estado.destacar.toUpperCase();
+  return 'CIFRA CLAVE';
+}
+
+function extraerAutorCitaAutomatico(estado) {
+  if (estado.autor_cita && estado.autor_cita.trim().length > 2 && !/DECLARACI[ÓO]N/i.test(estado.autor_cita)) {
+    return estado.autor_cita.trim().toUpperCase();
+  }
+  const fuente = `${estado.bajada || ''} ${estado.copy || ''}`;
+  const matchRol = fuente.match(/\b(?:el gobernador|el intendente|el presidente|el ministro|el concejal|la concejal|el diputado|la diputada|el senador|la senadora|el empresario|la delegada|el delegado|el titular|el vocero|el candidato)\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)?/i);
+  if (matchRol) return matchRol[0].toUpperCase();
+  return estado.categoria || 'DEFINICIÓN EDITORIAL';
 }
 
 function calcularAntiguedadNoticia(fechaRaw) {
@@ -770,7 +828,6 @@ async function transcribirAudioConGroq(audioUrl) {
   return (data.text || '').slice(0, 1800);
 }
 
-// Rastreador de páginas de Instagram y Facebook de Santa Cruz y Argentina vía Serper (últimas 24 hs)
 async function obtenerCandidatasRedesSociales() {
   try {
     const queryRedes = '(site:instagram.com/p/ OR site:instagram.com/reel/ OR site:facebook.com) ("Caleta Olivia" OR "Claudio Vidal" OR "Río Gallegos" OR "Santa Cruz" OR "elcaletense" OR "infocaleta" OR "vocesyapuntes" OR "cortanoticias" OR "elcancillercom" OR "laderechadiario")';
@@ -847,7 +904,6 @@ async function extraerNoticiaDeLink(url, tituloParaResolver = '', medioParaResol
   try {
     let urlFinal = url || '';
 
-    // Si es un link de Instagram o Facebook, usa Serper para rescatar el texto indexado del posteo
     if (/instagram\.com|facebook\.com/i.test(urlFinal)) {
       const dataRed = await llamarSerperApi('search', { q: urlFinal, gl: 'ar', hl: 'es', num: 3 });
       const itemRed = dataRed?.organic?.[0];
@@ -1167,17 +1223,18 @@ async function descargarYValidarImagen(url, timeoutMs = 5500, tituloDescriptivo 
   }
 }
 
-async function obtenerCandidatasFotoWeb(consulta) {
+async function obtenerCandidatasFotoWeb(consulta, urlsExcluidas = []) {
   if (!consulta || consulta.trim().length < 3) return [];
   const anioActual = new Date().getFullYear();
   const consultaLimpia = consulta.replace(/orcolandia|kukardo|mandril|casta/gi, '').trim();
+  const setExcluidas = new Set((urlsExcluidas || []).filter(Boolean));
   const itemsEncontrados = [];
 
   let dataS = await llamarSerperApi('images', {
     q: `${consultaLimpia} ${anioActual}`,
     gl: 'ar',
     hl: 'es',
-    num: 10,
+    num: 12,
     tbs: 'isz:l,itp:photo,qdr:m'
   });
 
@@ -1186,7 +1243,7 @@ async function obtenerCandidatasFotoWeb(consulta) {
       q: `${consultaLimpia} Argentina ${anioActual}`,
       gl: 'ar',
       hl: 'es',
-      num: 10,
+      num: 12,
       tbs: 'isz:l,itp:photo,qdr:y'
     });
   }
@@ -1195,6 +1252,7 @@ async function obtenerCandidatasFotoWeb(consulta) {
     for (const img of dataS.images) {
       if (
         img.imageUrl &&
+        !setExcluidas.has(img.imageUrl) &&
         (img.imageWidth || 800) >= 650 &&
         !esUrlDeArchivoViejo(img.imageUrl) &&
         !DOMINIOS_PROHIBIDOS_IMG.test(img.imageUrl) &&
@@ -1216,7 +1274,7 @@ async function obtenerCandidatasFotoWeb(consulta) {
         const dataW = await respW.json();
         for (const p of Object.values(dataW?.query?.pages || {})) {
           const orig = p?.original?.source;
-          if (orig && /\.(?:jpg|jpeg|png|webp)$/i.test(orig) && !/coat_of_arms|escudo|flag|bandera|map|mapa|locator|signature|firma/i.test(orig)) {
+          if (orig && !setExcluidas.has(orig) && /\.(?:jpg|jpeg|png|webp)$/i.test(orig) && !/coat_of_arms|escudo|flag|bandera|map|mapa|locator|signature|firma/i.test(orig)) {
             itemsEncontrados.push({ url: orig, desc: `Wikipedia: ${p.title}` });
           }
         }
@@ -1243,6 +1301,7 @@ async function obtenerCandidatasFotoWeb(consulta) {
         if (
           murl &&
           !vistos.has(murl) &&
+          !setExcluidas.has(murl) &&
           !esUrlDeArchivoViejo(murl) &&
           /\.(?:jpg|jpeg|png|webp)(?:\?|$)/i.test(murl) &&
           !DOMINIOS_PROHIBIDOS_IMG.test(murl) &&
@@ -1267,7 +1326,8 @@ async function auditarYResolverImagen({
   categoria = '',
   busquedasSugeridas = [],
   promptIaSugerido,
-  forzarBusquedaNueva = false
+  forzarBusquedaNueva = false,
+  urlsExcluidas = []
 }) {
   if (fotoCandidataUrl && esFotoManualDelEditor && !forzarBusquedaNueva) {
     const validadaEditor = await descargarYValidarImagen(fotoCandidataUrl, 6000, 'Foto enviada por el Editor');
@@ -1296,7 +1356,7 @@ async function auditarYResolverImagen({
   const colaConsultas = [...new Set([...busquedasSugeridas.filter(Boolean), titulo])].slice(0, 3);
 
   for (const queryWeb of colaConsultas) {
-    const candidatasWeb = await obtenerCandidatasFotoWeb(queryWeb);
+    const candidatasWeb = await obtenerCandidatasFotoWeb(queryWeb, urlsExcluidas);
     for (const cand of candidatasWeb) {
       const veredicto = await auditarFotoConVisionIA(cand.dataUrl, titulo, bajada, categoria, cand.tituloDescriptivo);
       if (veredicto.aprobada !== false) {
@@ -1372,7 +1432,7 @@ Redactá una NOTA PERIODÍSTICA COMPLETA en texto plano separada por doble salto
 
 REGLA 4 — BÚSQUEDA FOTOGRÁFICA ESCALONADA Y RECIENTE (${anioActual}):
 - "busqueda_foto_web": Nombre propio actual del protagonista principal o escenario + lugar + ${anioActual}.
-- "busqueda_foto_secundaria": Segundo protagonista actual o institución para modo Duelo/Lupa.
+- "busqueda_foto_secundaria": Segundo protagonista actual o institución para modo Duelo/Lupa/Carrusel.
 - "busqueda_foto_institucional": Edificio oficial o escenario físico real.
 
 LISTA BLANCA DE EMOJIS PERMITIDOS EN "copy":
@@ -1387,8 +1447,8 @@ Devolvé ÚNICAMENTE este objeto JSON plano (sin arrays adentro):
   "titulo": "TITULAR FILOSO EN MAYÚSCULAS SIN EMOJIS (5 a 8 palabras)",
   "destacar": "FRASE COMPLETA CON SENTIDO PROPIO DENTRO DEL TITULO",
   "bajada": "Subtítulo periodístico de 20 a 30 palabras SIN EMOJIS que aporta datos nuevos sin repetir el título e incluye los roles completos.",
-  "dato_clave": "Cifra central si existe, o vacío",
-  "autor_cita": "Rol y nombre si hay cita, o vacío",
+  "dato_clave": "Cifra corta de impacto (ej: '150 FAMILIAS', '6 VOTOS', '75 KM/H') extraída del hecho",
+  "autor_cita": "Rol y nombre del protagonista principal (ej: 'EL GOBERNADOR CLAUDIO VIDAL')",
   "fuente_credito": "Crédito corto en MAYÚSCULAS",
   "copy": "Nota periodística extensa (1300 a 2050 caracteres) con la estructura indicada",
   "busqueda_foto_web": "Nombre propio actual del protagonista o escenario + ${anioActual}",
@@ -1422,32 +1482,36 @@ Devolvé ÚNICAMENTE este objeto JSON plano (sin arrays adentro):
   return parsed;
 }
 
-async function generarSlidesCarruselConIA(tituloBase, copyBase) {
+async function generarSlidesCarruselConIA(tituloBase, bajadaBase, copyBase) {
   try {
-    const promptCarrusel = `A partir de esta noticia ("${tituloBase}" - ${String(copyBase || '').slice(0, 1000)}), redactá 3 placas en castellano para un carrusel de Instagram (Placa 1: Portada, Placa 2: Datos clave y contexto, Placa 3: Impacto y definiciones).
+    const promptCarrusel = `Sos el Editor Jefe de 'EL REGISTRO SUR'. A partir de esta noticia ("${tituloBase}" - "${bajadaBase}" - ${String(copyBase || '').slice(0, 1200)}), armá una historia visual de 3 placas para un carrusel de Instagram estilo Infobae / Filo.news:
+- Placa 1 (PORTADA GANCHO): El titular principal más fuerte y su bajada inicial sin repetir palabras.
+- Placa 2 (LAS CLAVES / DETALLES): Un título enfocado en los detalles operativos (barrios, montos, empresas, quiénes hablaron con su cargo) y un párrafo explicativo claro de 24 a 32 palabras.
+- Placa 3 (QUÉ CAMBIA / DEFINICIÓN): Un título sobre cómo sigue el tema o el impacto directo en la calle/vecinos, y un párrafo final contundente de 22 a 30 palabras.
+
 Devolvé ÚNICAMENTE este JSON plano:
 {
-  "t1": "TITULAR PLACA 1", "d1": "DESTACAR 1", "b1": "Bajada placa 1 de 20 a 28 palabras.",
-  "t2": "TITULAR PLACA 2", "d2": "DESTACAR 2", "b2": "Bajada placa 2 de 20 a 28 palabras.",
-  "t3": "TITULAR PLACA 3", "d3": "DESTACAR 3", "b3": "Bajada placa 3 de 20 a 28 palabras."
+  "t1": "TITULAR PORTADA (5 a 8 palabras)", "d1": "FRASE DESTACADA 1", "b1": "Subtítulo de portada de 20 a 28 palabras.",
+  "t2": "TITULAR DE CLAVES Y DETALLES (5 a 8 palabras)", "d2": "FRASE DESTACADA 2", "b2": "Desarrollo claro de 24 a 32 palabras con los datos concretos, cargos y lugares.",
+  "t3": "TITULAR DE IMPACTO Y CIERRE (5 a 8 palabras)", "d3": "FRASE DESTACADA 3", "b3": "Conclusión periodística de 22 a 30 palabras sobre qué cambia o cómo sigue."
 }`;
     const res = await llamarGroqChat([{ role: 'user', content: promptCarrusel }]);
     return [
-      { ...asegurarDestacadoEnTitulo(res.t1 || tituloBase, res.d1), bajada: limpiarBajadaPeriodistica(res.b1 || ultimoEstado.bajada) },
-      { ...asegurarDestacadoEnTitulo(res.t2 || 'LOS PUNTOS CLAVE DEL TEMA', res.d2 || 'PUNTOS CLAVE'), bajada: limpiarBajadaPeriodistica(res.b2 || ultimoEstado.bajada) },
-      { ...asegurarDestacadoEnTitulo(res.t3 || 'IMPACTO Y DEFINICIONES', res.d3 || 'DEFINICIONES'), bajada: limpiarBajadaPeriodistica(res.b3 || ultimoEstado.bajada) }
+      { ...asegurarDestacadoEnTitulo(res.t1 || tituloBase, res.d1 || ultimoEstado.destacar), bajada: limpiarBajadaPeriodistica(res.b1 || bajadaBase) },
+      { ...asegurarDestacadoEnTitulo(res.t2 || 'LAS CLAVES Y LOS DETALLES DEL TEMA', res.d2 || 'LAS CLAVES'), bajada: limpiarBajadaPeriodistica(res.b2 || bajadaBase) },
+      { ...asegurarDestacadoEnTitulo(res.t3 || 'QUÉ CAMBIA Y CÓMO SIGUE EL TEMA', res.d3 || 'QUÉ CAMBIA'), bajada: limpiarBajadaPeriodistica(res.b3 || bajadaBase) }
     ];
   } catch (e) {
     return [
       { titulo: ultimoEstado.titulo, destacar: ultimoEstado.destacar, bajada: ultimoEstado.bajada },
-      { titulo: 'EL CONTEXTO Y LOS DATOS CLAVE', destacar: 'DATOS CLAVE', bajada: ultimoEstado.bajada },
-      { titulo: 'IMPACTO Y DEFINICIONES', destacar: 'DEFINICIONES', bajada: ultimoEstado.bajada }
+      { titulo: 'LAS CLAVES Y DETALLES DE LA MEDIDA', destacar: 'LAS CLAVES', bajada: ultimoEstado.bajada },
+      { titulo: 'EL IMPACTO DIRECTO EN LA REGIÓN', destacar: 'IMPACTO DIRECTO', bajada: ultimoEstado.bajada }
     ];
   }
 }
 
 // ============================================================================
-// MOTOR GRÁFICO 2K RETINA + BALANCE GEOMÉTRICO + AUTO-GUILLOTINA DE BORDES
+// MOTOR GRÁFICO 2K RETINA + CARRUSEL EDITORIAL + CITA/DATO RESPETANDO EL LOGO
 // ============================================================================
 
 async function estamparMarcaDeAguaFoto(fotoUrl, textoCredito = 'EXCLUSIVO') {
@@ -1511,6 +1575,12 @@ async function renderizarFlyer({
     if (descargada) fotoSegura = descargada.dataUrl;
   }
 
+  let fotoSecSegura = fotoSecundariaUrl;
+  if (fotoSecundariaUrl && !fotoSecundariaUrl.startsWith('data:image/')) {
+    const descSec = await descargarYValidarImagen(fotoSecundariaUrl, 6000);
+    if (descSec) fotoSecSegura = descSec.dataUrl;
+  }
+
   const alto = esHistoria ? 1920 : 1080;
   const browser = await puppeteer.launch({
     headless: 'new',
@@ -1521,9 +1591,9 @@ async function renderizarFlyer({
     const page = await browser.newPage();
     await page.setViewport({ width: 1080, height: alto, deviceScaleFactor: 2 });
 
-    const catLimpia = limpiarEmojis(categoria).toUpperCase();
-    const { titulo: titLimpio, destacar: desLimpio } = asegurarDestacadoEnTitulo(titulo, destacar);
-    const bajLimpia = limpiarBajadaPeriodistica(bajada);
+    const catLimpia = limpiarEmojis(categoria || 'ACTUALIDAD / NOTICIAS').toUpperCase();
+    const { titulo: titLimpio, destacar: desLimpio } = asegurarDestacadoEnTitulo(titulo || 'COBERTURA DE EL REGISTRO SUR', destacar);
+    const bajLimpia = limpiarBajadaPeriodistica(bajada || 'Toda la información verificada de Caleta Olivia, Santa Cruz y el país.');
 
     let htmlModificado = templateHtml
       .replace('FALLO DE LA CORTE: REHABILITAN LA VENTA DE TIERRAS A EXTRANJEROS TRAS EL DNU DE MILEI', () => titLimpio.replace(/"/g, '&quot;'))
@@ -1625,7 +1695,6 @@ async function renderizarFlyer({
 
       function blindarTipografiaProlija(el, esSubtitulo = false) {
         if (!el) return;
-        // Balance geométrico para títulos (50/50) y pretty para subtítulos
         el.style.textWrap = esSubtitulo ? 'pretty' : 'balance';
 
         const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
@@ -1690,11 +1759,20 @@ async function renderizarFlyer({
           }
           fotoPrincipal = img;
           if (expandir && urlLimpia) {
+            const parent = img.parentElement;
+            if (parent) {
+              parent.style.position = 'relative';
+              parent.style.overflow = 'hidden';
+              const bgBlurImg = document.createElement('img');
+              bgBlurImg.src = urlLimpia;
+              bgBlurImg.style.cssText = 'position:absolute;inset:-40px;width:calc(100% + 80px);height:calc(100% + 80px);object-fit:cover;filter:blur(28px) brightness(0.42) saturate(1.15);z-index:0;';
+              parent.insertBefore(bgBlurImg, img);
+            }
+            img.style.position = 'relative';
+            img.style.zIndex = '1';
             img.style.objectFit = 'contain';
-            img.parentElement.style.backgroundImage = `url("${urlLimpia}")`;
-            img.parentElement.style.backgroundSize = 'cover';
-            img.parentElement.style.backgroundPosition = 'center';
-            img.parentElement.style.backdropFilter = 'blur(28px)';
+            img.style.width = '100%';
+            img.style.height = '100%';
           } else {
             img.style.objectFit = 'cover';
             img.style.objectPosition = `center ${focoY || '20%'}`;
@@ -1756,7 +1834,7 @@ async function renderizarFlyer({
         } catch (e) {}
       }
 
-      if (esFotoClara && modoVisual === 'estandar') {
+      if (esFotoClara && (modoVisual === 'estandar' || modoVisual === 'carrusel_portada')) {
         const refuerzo = document.createElement('div');
         refuerzo.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:2;background:linear-gradient(to top, rgba(4,10,20,0.97) 0%, rgba(4,10,20,0.84) 46%, rgba(4,10,20,0.12) 100%);';
         canvas.appendChild(refuerzo);
@@ -1765,58 +1843,111 @@ async function renderizarFlyer({
       if (fuenteCredito) {
         const badgeFuente = document.createElement('div');
         badgeFuente.textContent = `FUENTE: ${fuenteCredito.toUpperCase()}`;
-        badgeFuente.style.cssText = 'position:absolute;top:34px;right:38px;z-index:30;background:rgba(6,14,26,0.72);backdrop-filter:blur(8px);color:rgba(255,255,255,0.85);font-family:sans-serif;font-size:15px;font-weight:700;letter-spacing:1.2px;padding:7px 14px;border-radius:6px;border:1px solid rgba(255,255,255,0.16);';
+        badgeFuente.style.cssText = 'position:absolute;top:34px;right:38px;z-index:30;background:rgba(6,14,26,0.76);backdrop-filter:blur(8px);color:rgba(255,255,255,0.88);font-family:sans-serif;font-size:14px;font-weight:800;letter-spacing:1.3px;padding:7px 14px;border-radius:6px;border:1px solid rgba(255,255,255,0.18);';
         canvas.appendChild(badgeFuente);
       }
 
       if (numeroSlide) {
         const badgeSlide = document.createElement('div');
         badgeSlide.textContent = numeroSlide;
-        badgeSlide.style.cssText = `position:absolute;top:34px;left:38px;z-index:30;background:${accentColor};color:#050d1a;font-family:sans-serif;font-size:18px;font-weight:900;padding:7px 16px;border-radius:999px;`;
+        badgeSlide.style.cssText = `position:absolute;top:34px;left:38px;z-index:30;background:${accentColor};color:#050d1a;font-family:sans-serif;font-size:17px;font-weight:900;letter-spacing:1px;padding:7px 18px;border-radius:999px;box-shadow:0 8px 20px rgba(0,0,0,0.45);`;
         canvas.appendChild(badgeSlide);
       }
 
-      if (modoVisual === 'cita' || modoVisual === 'dato') {
+      if (modoVisual === 'carrusel_portada') {
+        const badgeDesliza = document.createElement('div');
+        badgeDesliza.innerHTML = 'DESLIZÁ &rarr;';
+        badgeDesliza.style.cssText = `position:absolute;bottom:118px;right:48px;z-index:30;background:rgba(5,13,26,0.88);color:${accentColor};border:1.5px solid ${accentColor};font-family:sans-serif;font-size:15px;font-weight:900;letter-spacing:1.5px;padding:8px 18px;border-radius:999px;box-shadow:0 8px 24px rgba(0,0,0,0.6);`;
+        canvas.appendChild(badgeDesliza);
+      }
+
+      const modulosEspeciales = ['cita', 'dato', 'carrusel_claves', 'carrusel_cierre'];
+      if (modulosEspeciales.includes(modoVisual)) {
+        // Oculta únicamente los textos centrales originales dejando intacto el pie del logo de la brújula (abajo de y=920)
+        canvas.querySelectorAll('h1, h2, h3, p, .titulo, .bajada, [class*="title"], [class*="sub"], [class*="cat"], [class*="tag"], [class*="pill"]').forEach(el => {
+          const r = el.getBoundingClientRect();
+          if (r.top < 915 && r.height < 600) {
+            el.style.opacity = '0';
+            el.style.pointerEvents = 'none';
+          }
+        });
+
         const tituloFormateado = destacar && titulo.includes(destacar)
           ? titulo.replace(destacar, `<span style="color:${accentColor}">${destacar}</span>`)
           : titulo;
 
-        const overlay = document.createElement('div');
-        overlay.style.cssText = 'position:absolute;inset:0;z-index:20;background:linear-gradient(160deg, rgba(6,15,28,0.94) 0%, rgba(9,22,42,0.97) 100%);display:flex;flex-direction:column;justify-content:space-between;padding:72px 72px 145px 72px;box-sizing:border-box;font-family:sans-serif;';
+        const panel = document.createElement('div');
+        // El panel termina a 132px del borde inferior para que el logo de la brújula y @elregistrosur se vean siempre
+        panel.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:132px;z-index:18;display:flex;flex-direction:column;justify-content:flex-end;padding:88px 64px 28px 64px;box-sizing:border-box;font-family:sans-serif;';
 
-        if (modoVisual === 'cita') {
-          overlay.innerHTML = `
-            <div><span style="display:inline-block;background:${accentColor};color:#050d1a;font-weight:900;font-size:18px;letter-spacing:1.5px;padding:8px 18px;border-radius:6px;text-transform:uppercase;">${categoria}</span></div>
-            <div style="display:flex;flex-direction:column;gap:26px;">
-              <div style="display:flex;align-items:center;gap:26px;">
-                ${urlLimpia ? `<img src="${urlLimpia}" style="width:140px;height:140px;border-radius:50%;object-fit:cover;border:4px solid ${accentColor};box-shadow:0 12px 30px rgba(0,0,0,0.45);" />` : ''}
-                <div>
-                  <div style="color:${accentColor};font-size:74px;line-height:0.6;font-weight:900;">“</div>
-                  <div style="color:#ffffff;font-size:21px;font-weight:800;letter-spacing:1px;text-transform:uppercase;margin-top:8px;">${autorCita || 'DECLARACIÓN DESTACADA'}</div>
+        if (modoVisual === 'carrusel_claves') {
+          if (fotoPrincipal) {
+            fotoPrincipal.style.height = '450px';
+            fotoPrincipal.style.filter = 'brightness(0.82) contrast(1.06)';
+          }
+          panel.style.background = 'linear-gradient(to bottom, rgba(5,13,26,0.10) 0%, rgba(5,13,26,0.88) 34%, #050d1a 48%)';
+          panel.innerHTML = `
+            <div style="background:rgba(10,23,44,0.92);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,0.12);border-left:7px solid ${accentColor};border-radius:20px;padding:42px 44px;box-shadow:0 24px 50px rgba(0,0,0,0.65);display:flex;flex-direction:column;gap:22px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;">
+                <span style="background:#ffffff;color:#050d1a;font-weight:900;font-size:16px;letter-spacing:1.5px;padding:6px 16px;border-radius:4px;text-transform:uppercase;">${categoria}</span>
+                <span style="color:${accentColor};font-weight:800;font-size:16px;letter-spacing:1.5px;">LAS CLAVES DEL TEMA &rarr;</span>
+              </div>
+              <div class="texto-equilibrado" style="color:#ffffff;font-size:44px;font-weight:900;line-height:1.12;letter-spacing:-0.5px;text-transform:uppercase;">${tituloFormateado}</div>
+              <div class="texto-equilibrado sub-bajada" style="color:rgba(255,255,255,0.92);font-size:26px;line-height:1.42;font-weight:400;">${bajada}</div>
+            </div>`;
+        } else if (modoVisual === 'carrusel_cierre') {
+          if (fotoPrincipal) {
+            fotoPrincipal.style.filter = 'blur(14px) brightness(0.32) saturate(1.2)';
+          }
+          panel.style.justifyContent = 'center';
+          panel.style.background = 'radial-gradient(circle at center, rgba(12,28,54,0.55) 0%, rgba(5,13,26,0.96) 85%)';
+          panel.innerHTML = `
+            <div style="background:linear-gradient(165deg, rgba(12,27,50,0.95) 0%, rgba(6,15,28,0.98) 100%);border:1.5px solid rgba(56,189,248,0.35);border-top:7px solid ${accentColor};border-radius:22px;padding:48px 48px;box-shadow:0 28px 60px rgba(0,0,0,0.75);display:flex;flex-direction:column;gap:24px;">
+              <div>
+                <span style="display:inline-block;background:${accentColor};color:#050d1a;font-weight:900;font-size:16px;letter-spacing:1.6px;padding:7px 18px;border-radius:5px;text-transform:uppercase;">QUÉ CAMBIA / DEFINICIONES</span>
+              </div>
+              <div class="texto-equilibrado" style="color:#ffffff;font-size:46px;font-weight:900;line-height:1.12;letter-spacing:-0.5px;text-transform:uppercase;">${tituloFormateado}</div>
+              <div class="texto-equilibrado sub-bajada" style="color:rgba(255,255,255,0.90);font-size:26px;line-height:1.42;font-weight:400;border-left:4px solid ${accentColor};padding-left:22px;">${bajada}</div>
+              <div style="margin-top:6px;padding-top:18px;border-top:1px solid rgba(255,255,255,0.12);display:flex;justify-content:space-between;align-items:center;">
+                <span style="color:rgba(255,255,255,0.70);font-size:16px;font-weight:700;letter-spacing:1px;">NOTA COMPLETA EN LA DESCRIPCIÓN</span>
+                <span style="color:${accentColor};font-size:17px;font-weight:900;letter-spacing:1px;">@ELREGISTROSUR</span>
+              </div>
+            </div>`;
+        } else if (modoVisual === 'cita') {
+          if (fotoPrincipal) {
+            fotoPrincipal.style.filter = 'blur(10px) brightness(0.35)';
+          }
+          panel.style.justifyContent = 'center';
+          panel.style.background = 'linear-gradient(180deg, rgba(5,13,26,0.45) 0%, rgba(5,13,26,0.96) 85%)';
+          panel.innerHTML = `
+            <div style="background:rgba(9,21,40,0.92);border:1px solid rgba(255,255,255,0.14);border-radius:22px;padding:42px 44px;box-shadow:0 25px 55px rgba(0,0,0,0.75);display:flex;flex-direction:column;gap:24px;">
+              <div style="display:flex;align-items:center;gap:24px;">
+                ${urlLimpia ? `<img src="${urlLimpia}" style="width:128px;height:128px;border-radius:50%;object-fit:cover;object-position:center 18%;border:4px solid ${accentColor};box-shadow:0 10px 25px rgba(0,0,0,0.5);" />` : ''}
+                <div style="display:flex;flex-direction:column;gap:8px;">
+                  <span style="align-self:flex-start;background:#ffffff;color:#050d1a;font-weight:900;font-size:15px;letter-spacing:1.4px;padding:5px 14px;border-radius:4px;text-transform:uppercase;">${categoria}</span>
+                  <div style="color:${accentColor};font-size:21px;font-weight:900;letter-spacing:0.8px;text-transform:uppercase;">${autorCita}</div>
                 </div>
               </div>
-              <div class="texto-equilibrado" style="color:#ffffff;font-size:46px;font-weight:900;line-height:1.14;letter-spacing:-0.5px;">${tituloFormateado}</div>
-              <div class="texto-equilibrado sub-bajada" style="color:rgba(255,255,255,0.86);font-size:25px;line-height:1.36;font-weight:400;border-left:4px solid ${accentColor};padding-left:20px;">${bajada}</div>
-            </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid rgba(255,255,255,0.15);padding-top:22px;">
-              <span style="color:#ffffff;font-weight:900;font-size:22px;letter-spacing:1.5px;">EL REGISTRO SUR</span>
-              <span style="color:${accentColor};font-weight:700;font-size:19px;">@elregistrosur</span>
+              <div class="texto-equilibrado" style="color:#ffffff;font-size:44px;font-weight:900;line-height:1.14;letter-spacing:-0.5px;">“${tituloFormateado}”</div>
+              <div class="texto-equilibrado sub-bajada" style="color:rgba(255,255,255,0.88);font-size:24px;line-height:1.38;font-weight:400;border-left:4px solid ${accentColor};padding-left:20px;">${bajada}</div>
             </div>`;
-        } else {
-          overlay.innerHTML = `
-            <div><span style="display:inline-block;background:${accentColor};color:#050d1a;font-weight:900;font-size:18px;letter-spacing:1.5px;padding:8px 18px;border-radius:6px;text-transform:uppercase;">${categoria}</span></div>
-            <div style="display:flex;flex-direction:column;gap:22px;text-align:left;">
-              <div style="color:${accentColor};font-size:122px;font-weight:900;line-height:0.95;letter-spacing:-2px;text-shadow:0 10px 35px rgba(0,0,0,0.5);">${datoClave || 'DATO CLAVE'}</div>
-              <div class="texto-equilibrado" style="color:#ffffff;font-size:48px;font-weight:900;line-height:1.12;">${tituloFormateado}</div>
-              <div class="texto-equilibrado sub-bajada" style="color:rgba(255,255,255,0.86);font-size:26px;line-height:1.36;">${bajada}</div>
-            </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid rgba(255,255,255,0.15);padding-top:22px;">
-              <span style="color:#ffffff;font-weight:900;font-size:22px;letter-spacing:1.5px;">EL REGISTRO SUR</span>
-              <span style="color:${accentColor};font-weight:700;font-size:19px;">@elregistrosur</span>
+        } else if (modoVisual === 'dato') {
+          if (fotoPrincipal) {
+            fotoPrincipal.style.filter = 'blur(10px) brightness(0.34)';
+          }
+          panel.style.justifyContent = 'center';
+          panel.style.background = 'linear-gradient(180deg, rgba(5,13,26,0.45) 0%, rgba(5,13,26,0.96) 85%)';
+          panel.innerHTML = `
+            <div style="background:rgba(9,21,40,0.92);border:1px solid rgba(255,255,255,0.14);border-left:7px solid ${accentColor};border-radius:22px;padding:44px 46px;box-shadow:0 25px 55px rgba(0,0,0,0.75);display:flex;flex-direction:column;gap:20px;">
+              <div><span style="background:#ffffff;color:#050d1a;font-weight:900;font-size:15px;letter-spacing:1.5px;padding:6px 16px;border-radius:4px;text-transform:uppercase;">${categoria}</span></div>
+              <div style="color:${accentColor};font-size:92px;font-weight:900;line-height:0.98;letter-spacing:-2px;text-shadow:0 10px 30px rgba(0,0,0,0.55);">${datoClave}</div>
+              <div class="texto-equilibrado" style="color:#ffffff;font-size:42px;font-weight:900;line-height:1.14;text-transform:uppercase;">${tituloFormateado}</div>
+              <div class="texto-equilibrado sub-bajada" style="color:rgba(255,255,255,0.88);font-size:24px;line-height:1.38;">${bajada}</div>
             </div>`;
         }
-        canvas.appendChild(overlay);
-        overlay.querySelectorAll('.texto-equilibrado').forEach(el => blindarTipografiaProlija(el, el.classList.contains('sub-bajada')));
+
+        canvas.appendChild(panel);
+        panel.querySelectorAll('.texto-equilibrado').forEach(el => blindarTipografiaProlija(el, el.classList.contains('sub-bajada')));
         return;
       }
 
@@ -1848,7 +1979,7 @@ async function renderizarFlyer({
         }
       });
     }, {
-      url: fotoSegura, urlSecundaria: fotoSecundariaUrl, focoY: focoVertical,
+      url: fotoSegura, urlSecundaria: fotoSecSegura, focoY: focoVertical,
       expandir: expandirSinCloudinary, modoUrgente: esUrgente, modoHistoria: esHistoria,
       modoVisual, categoria: catLimpia, titulo: titLimpio, destacar: desLimpio, bajada: bajLimpia,
       datoClave, autorCita, fuenteCredito, numeroSlide
@@ -1940,6 +2071,7 @@ async function armarNoticiaDesdeCandidata(elegida, exigirFotoReal = false) {
     foto_url: urlFinal,
     foto_original_url: urlOriginal || urlFinal,
     foto_secundaria_url: '',
+    fotos_usadas: [urlOriginal, urlFinal].filter(Boolean),
     foco_vertical: focoVertical,
     categoria: noticiaIA.categoria,
     titulo: noticiaIA.titulo,
@@ -1982,6 +2114,19 @@ async function generarDatosRadar(forzar = false) {
   }
 
   return await armarNoticiaDesdeCandidata(ordenadas[0], false);
+}
+
+// Garantiza que siempre exista un borrador válido antes de ejecutar comandos de edición/formato (.carrusel, .duelo, .cita, etc.)
+async function asegurarBorradorActivo() {
+  if (ultimoEstado && ultimoEstado.titulo) return true;
+  cargarEstadoDesdeDisco();
+  if (ultimoEstado && ultimoEstado.titulo) return true;
+  if (colaBorradores.length > 0) {
+    ultimoEstado = colaBorradores.shift();
+    return Boolean(ultimoEstado && ultimoEstado.titulo);
+  }
+  const radarAuto = await generarDatosRadar(true);
+  return Boolean(radarAuto && ultimoEstado.titulo);
 }
 
 async function ejecutarAlertaRuta3YServicios() {
@@ -2032,6 +2177,7 @@ async function ejecutarAlertaRuta3YServicios() {
     foto_url: urlFinal,
     foto_original_url: urlOriginal || urlFinal,
     foto_secundaria_url: '',
+    fotos_usadas: [urlOriginal, urlFinal].filter(Boolean),
     foco_vertical: focoVertical,
     categoria: 'ZONA NORTE / ALERTA',
     titulo: noticiaIA.titulo,
@@ -2100,6 +2246,7 @@ Devolvé ÚNICAMENTE este JSON plano:
   const buffers = [];
   for (let i = 0; i < slides.length; i++) {
     const td = asegurarDestacadoEnTitulo(slides[i].titulo, slides[i].destacar);
+    const modoSlide = i === 0 ? 'carrusel_portada' : (i === slides.length - 1 ? 'carrusel_cierre' : 'carrusel_claves');
     const buf = await renderizarFlyer({
       categoria: 'SANTA CRUZ / RESUMEN',
       titulo: td.titulo,
@@ -2110,8 +2257,8 @@ Devolvé ÚNICAMENTE este JSON plano:
       expandirSinCloudinary: false,
       esUrgente: false,
       esHistoria: false,
-      modoVisual: 'estandar',
-      numeroSlide: `${i + 1}/${slides.length}`
+      modoVisual: modoSlide,
+      numeroSlide: `0${i + 1} / 0${slides.length}`
     });
     buffers.push(buf);
   }
@@ -2122,6 +2269,7 @@ Devolvé ÚNICAMENTE este JSON plano:
     foto_url: fotoBase,
     foto_original_url: fotoBase,
     foto_secundaria_url: '',
+    fotos_usadas: [fotoBase],
     foco_vertical: '20%',
     categoria: 'SANTA CRUZ / RESUMEN',
     titulo: limpiarEmojis(slides[0].titulo),
@@ -2177,6 +2325,7 @@ async function ejecutarParteClima() {
     foto_url: fotoClima,
     foto_original_url: fotoClima,
     foto_secundaria_url: '',
+    fotos_usadas: [fotoClima],
     foco_vertical: '20%',
     categoria: 'CALETA OLIVIA / CLIMA',
     titulo: noticiaIA.titulo,
@@ -2256,11 +2405,14 @@ app.get('/clima', async (req, res) => {
 });
 
 async function responderConPlacaYCopyExtenso(res, payload, prefijoTelegram = '') {
+  persistirEstadoEnDisco(ultimoEstado);
   const copyCompleto = ultimoEstado.copy || payload.copy || '';
   const { captionFoto, enviarTextoCompletoAparte } = prepararCaptionTelegram(prefijoTelegram, copyCompleto);
 
   if (enviarTextoCompletoAparte) {
-    enviarMensajeTelegram(`📝 DESCRIPCIÓN COMPLETA PARA META (${copyCompleto.length}/2200 caracteres):\n\n${copyCompleto}`);
+    setTimeout(() => {
+      enviarMensajeTelegram(`📝 DESCRIPCIÓN COMPLETA PARA META (${copyCompleto.length}/2200 caracteres):\n\n${copyCompleto}`);
+    }, 1500);
   }
 
   return res.json({
@@ -2288,7 +2440,7 @@ app.post('/generar', async (req, res) => {
     ultimoComandoTimestamp = ahoraMs;
 
     if (callback_query_id) {
-      await responderCallbackTelegram(callback_query_id, '⚡ Aplicando edición en El Registro Sur...');
+      await responderCallbackTelegram(callback_query_id, '⚡ Procesando en El Registro Sur...');
     }
 
     const matchComando = texto_crudo.match(/^\.([a-zA-ZáéíóúñÁÉÍÓÚÑ0-9]+)\s*([\s\S]*)$/);
@@ -2309,10 +2461,31 @@ app.post('/generar', async (req, res) => {
 
     const replyMarkupJson = JSON.stringify(generarTecladoTactil());
 
+    // 1. COMANDO PUBLICAR (por si Make lo reenvía a /generar)
+    if (comando === 'publicar' || comando === 'comandopublicar') {
+      await asegurarBorradorActivo();
+      if (!ultimoEstado.imagen_buffer) {
+        return res.json({ ok: false, descartado: true, error: 'Sin borrador activo para publicar.' });
+      }
+      return res.json({
+        ok: true,
+        publicar: true,
+        categoria: ultimoEstado.categoria,
+        titulo: ultimoEstado.titulo,
+        bajada: ultimoEstado.bajada,
+        copy: ultimoEstado.copy,
+        copy_completo: ultimoEstado.copy,
+        url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
+        imagen_base64: ultimoEstado.imagen_buffer.toString('base64')
+      });
+    }
+
+    // 2. COMANDO DESCARTAR
     if (comando === 'descartar') {
       const descartadoTitulo = ultimoEstado.titulo || 'Borrador';
       if (colaBorradores.length > 0) {
         ultimoEstado = colaBorradores.shift();
+        persistirEstadoEnDisco(ultimoEstado);
         await enviarMensajeTelegram(`🗑️ Descartado: "${descartadoTitulo}".\n↩️ Recuperado borrador anterior en cola: "${ultimoEstado.titulo}".`);
       } else {
         ultimoEstado.imagen_buffer = null;
@@ -2322,12 +2495,14 @@ app.post('/generar', async (req, res) => {
       return res.json({ ok: true, descartado: true, imagen_base64: '' });
     }
 
+    // 3. COMANDO AYUDA / COMANDOS
     if (comando === 'comandos' || comando === 'ayuda') {
-      const textoAyuda = `🤖 COMANDOS Y EDITOR DE EL REGISTRO SUR:\n\n.top (o .lista) → Muestra las 5 noticias más recientes de los 33 portales (.1 a .5)\n.redes → Muestra los 5 posteos más recientes de páginas de Instagram y Facebook (.1 a .5)\n.radar → Arma directo la noticia más importante o reciente\n.duelo → Arma collage pantalla dividida con 2 fotos\n.lupa → Agrega recuadro flotante PIP con segunda foto\n.expandir → Expande foto horizontal con fondo desenfocado\n.ruta3 / .clima / .resumen → Coberturas especiales\n.marca [crédito] → Estampa marca de agua en fotos de vecinos\n.cita / .dato / .carrusel / .historia → Formatos\n.editar [cambio] → Corrige textos\n.publicar → Sube a Facebook e Instagram`;
+      const textoAyuda = `🤖 COMANDOS Y EDITOR DE EL REGISTRO SUR:\n\n.top (o .lista) → Muestra las 5 noticias más recientes de los 33 portales (.1 a .5)\n.redes → Muestra los 5 posteos más recientes de páginas de Instagram y Facebook (.1 a .5)\n.radar → Arma directo la noticia más importante o reciente\n.carrusel → Arma carrusel editorial de 3 placas con distintos diseños (Portada + Claves + Cierre)\n.duelo → Arma collage pantalla dividida con 2 fotos distintas\n.lupa → Agrega recuadro flotante PIP con segunda foto\n.cita / .dato → Placa de frase textual o cifra gigante (conservando logo oficial)\n.auditar → Cambia la foto buscando una nueva sin repetir\n.expandir → Expande foto horizontal con fondo desenfocado real\n.ruta3 / .clima / .resumen → Coberturas especiales\n.marca [crédito] → Estampa marca de agua en fotos de vecinos\n.historia → Formato vertical 9:16\n.editar [cambio] → Corrige textos\n.publicar → Sube a Facebook e Instagram`;
       await enviarMensajeTelegram(textoAyuda);
       return res.json({ ok: true, descartado: true, imagen_base64: '' });
     }
 
+    // 4. COMANDO REDES
     if (comando === 'redes' || comando === 'ig' || comando === 'fb') {
       const candidatasRedes = await obtenerCandidatasRedesSociales();
       ultimasTopCandidatas = candidatasRedes.slice(0, 5);
@@ -2345,6 +2520,7 @@ app.post('/generar', async (req, res) => {
       return res.json({ ok: true, descartado: true, imagen_base64: '' });
     }
 
+    // 5. COMANDO TOP / LISTA
     if (comando === 'top' || comando === 'lista') {
       const candidatas = await obtenerTodasLasCandidatasRadar();
       let ordenadas = ordenarCandidatasRelevantes(candidatas, false);
@@ -2364,7 +2540,12 @@ app.post('/generar', async (req, res) => {
       return res.json({ ok: true, descartado: true, imagen_base64: '' });
     }
 
-    if (['1', '2', '3', '4', '5'].includes(comando) && ultimasTopCandidatas.length > 0) {
+    // 6. SELECCIÓN NUMÉRICA (.1 a .5)
+    if (['1', '2', '3', '4', '5'].includes(comando)) {
+      if (ultimasTopCandidatas.length === 0) {
+        const candidatas = await obtenerTodasLasCandidatasRadar();
+        ultimasTopCandidatas = ordenarCandidatasRelevantes(candidatas, true).slice(0, 5);
+      }
       const idx = parseInt(comando, 10) - 1;
       const elegida = ultimasTopCandidatas[idx];
       if (!elegida) {
@@ -2388,47 +2569,7 @@ app.post('/generar', async (req, res) => {
       }, `🚨 BOCETO (${armada.medio.toUpperCase()})\n⏱️ Publicado en el portal: ${armada.antiguedadTexto} — ¿QUERÉS PUBLICARLO?`);
     }
 
-    if ((comando === 'duelo' || comando === 'lupa') && ultimoEstado.titulo) {
-      let fotoSec = ultimoEstado.foto_secundaria_url;
-      if (!fotoSec) {
-        const querySec = argumento || ultimoEstado.busqueda_foto_secundaria || ultimoEstado.destacar || ultimoEstado.titulo;
-        const cands = await obtenerCandidatasFotoWeb(querySec);
-        const distinta = cands.find(c => c.url !== ultimoEstado.foto_original_url) || cands[0];
-        if (distinta) fotoSec = distinta.dataUrl;
-      }
-      ultimoEstado.foto_secundaria_url = fotoSec || ultimoEstado.foto_url;
-      ultimoEstado.modo_visual = comando;
-
-      const imageBuffer = await renderizarFlyer({
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        datoClave: ultimoEstado.dato_clave,
-        autorCita: ultimoEstado.autor_cita,
-        fuenteCredito: ultimoEstado.fuente_credito,
-        fotoFinalUrl: ultimoEstado.foto_url,
-        fotoSecundariaUrl: ultimoEstado.foto_secundaria_url,
-        focoVertical: ultimoEstado.foco_vertical,
-        expandirSinCloudinary: false,
-        esUrgente: ultimoEstado.urgente,
-        esHistoria: false,
-        modoVisual: comando
-      });
-      ultimoEstado.imagen_buffer = imageBuffer;
-
-      return responderConPlacaYCopyExtenso(res, {
-        ok: true,
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        reply_markup_json: replyMarkupJson,
-        url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
-        imagen_base64: imageBuffer.toString('base64')
-      }, comando === 'duelo' ? '⚡ MODO DUELO 2 FOTOS APLICADO:' : '🔍 MODO LUPA PIP APLICADO:');
-    }
-
+    // 7. COMANDOS DE COBERTURAS ESPECIALES (.radar, .ruta3, .resumen, .clima, .marca)
     if (comando === 'marca') {
       const fotoOrigen = nuevaFotoTelegram || ultimoEstado.foto_original_url;
       if (!fotoOrigen) throw new Error('Enviá una foto junto con .marca para estampar el logo de El Registro Sur.');
@@ -2441,6 +2582,7 @@ app.post('/generar', async (req, res) => {
         foto_url: fotoOrigen,
         foto_original_url: fotoOrigen,
         foto_secundaria_url: '',
+        fotos_usadas: [fotoOrigen],
         foco_vertical: '20%',
         categoria: 'EXCLUSIVO / VECINOS',
         titulo: 'REGISTRO EXCLUSIVO DE VECINOS',
@@ -2508,13 +2650,15 @@ app.post('/generar', async (req, res) => {
 
     if (comando === 'resumen') {
       const resumen = await ejecutarResumenDiarioCarrusel();
-      for (let i = 1; i < resumen.buffers.length; i++) {
-        const f = new FormData();
-        f.append('chat_id', EDITOR_CHAT_ID);
-        f.append('photo', new Blob([resumen.buffers[i]], { type: 'image/png' }), `resumen_${i + 1}.png`);
-        f.append('caption', `📑 Placa ${i + 1}/${resumen.buffers.length} del resumen diario`);
-        await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`, { method: 'POST', body: f });
-      }
+      setTimeout(async () => {
+        for (let i = 1; i < resumen.buffers.length; i++) {
+          const f = new FormData();
+          f.append('chat_id', EDITOR_CHAT_ID);
+          f.append('photo', new Blob([resumen.buffers[i]], { type: 'image/png' }), `resumen_${i + 1}.png`);
+          f.append('caption', `📑 Placa ${i + 1}/${resumen.buffers.length} del resumen diario`);
+          await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`, { method: 'POST', body: f });
+        }
+      }, 2500);
       return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: 'SANTA CRUZ / RESUMEN',
@@ -2522,7 +2666,7 @@ app.post('/generar', async (req, res) => {
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: resumen.buffers[0].toString('base64')
-      });
+      }, '📰 RESUMEN DIARIO (Placa 1/5):');
     }
 
     if (comando === 'clima' || comando === 'comandoclima') {
@@ -2539,299 +2683,404 @@ app.post('/generar', async (req, res) => {
       }, '📢 PARTE METEOROLÓGICO (⏱️ Actualizado ahora):');
     }
 
-    if ((comando === 'cita' || comando === 'dato') && ultimoEstado.titulo) {
-      const imageBuffer = await renderizarFlyer({
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        datoClave: ultimoEstado.dato_clave,
-        autorCita: ultimoEstado.autor_cita,
-        fuenteCredito: ultimoEstado.fuente_credito,
-        fotoFinalUrl: ultimoEstado.foto_url,
-        focoVertical: ultimoEstado.foco_vertical,
-        expandirSinCloudinary: false,
-        esUrgente: ultimoEstado.urgente,
-        esHistoria: false,
-        modoVisual: comando
-      });
-      ultimoEstado.modo_visual = comando;
-      ultimoEstado.imagen_buffer = imageBuffer;
+    // 8. COMANDOS DE FORMATO Y EDICIÓN VISUAL (Auto-rescatan borrador si la memoria estaba vacía)
+    const comandosDeFormato = [
+      'duelo', 'lupa', 'cita', 'dato', 'carrusel', 'auditar', 'comandoauditar',
+      'historia', 'comandohistoria', 'expandir', 'comandoexpandir',
+      'urgente', 'comandourgente', 'normal', 'comandonormal', 'ia', 'comandoia'
+    ];
 
-      return responderConPlacaYCopyExtenso(res, {
-        ok: true,
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        reply_markup_json: replyMarkupJson,
-        url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
-        imagen_base64: imageBuffer.toString('base64')
-      });
-    }
+    if (comandosDeFormato.includes(comando)) {
+      if ((comando === 'urgente' || comando === 'comandourgente') && (argumento || nuevaFotoTelegram)) {
+        // Si mandó ".urgente [texto de noticia nueva]", sigue abajo para crear la noticia urgente desde cero
+      } else {
+        const hayBorrador = await asegurarBorradorActivo();
+        if (!hayBorrador) {
+          await enviarMensajeTelegram('⚠️ Todavía no hay ningún borrador cargado. Mandá .radar o un link primero.');
+          return res.json({ ok: true, descartado: true, imagen_base64: '' });
+        }
 
-    if (comando === 'carrusel' && ultimoEstado.titulo) {
-      const slides = await generarSlidesCarruselConIA(ultimoEstado.titulo, ultimoEstado.copy);
+        if (comando === 'duelo' || comando === 'lupa') {
+          const querySec = argumento || ultimoEstado.busqueda_foto_secundaria || ultimoEstado.destacar || ultimoEstado.titulo;
+          const cands = await obtenerCandidatasFotoWeb(querySec, ultimoEstado.fotos_usadas || [ultimoEstado.foto_original_url]);
+          if (cands[0]) {
+            ultimoEstado.foto_secundaria_url = cands[0].dataUrl;
+            ultimoEstado.fotos_usadas = [...(ultimoEstado.fotos_usadas || []), cands[0].url];
+          } else if (!ultimoEstado.foto_secundaria_url) {
+            ultimoEstado.foto_secundaria_url = ultimoEstado.foto_url;
+          }
+          ultimoEstado.modo_visual = comando;
 
-      const buffers = [];
-      for (let i = 0; i < 3; i++) {
-        const buf = await renderizarFlyer({
-          categoria: ultimoEstado.categoria,
-          titulo: slides[i].titulo,
-          destacar: slides[i].destacar,
-          bajada: slides[i].bajada,
-          fuenteCredito: ultimoEstado.fuente_credito,
-          fotoFinalUrl: ultimoEstado.foto_url,
-          focoVertical: ultimoEstado.foco_vertical,
-          expandirSinCloudinary: false,
-          esUrgente: ultimoEstado.urgente,
-          esHistoria: false,
-          modoVisual: 'estandar',
-          numeroSlide: `${i + 1}/3`
-        });
-        buffers.push(buf);
+          const imageBuffer = await renderizarFlyer({
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            datoClave: ultimoEstado.dato_clave,
+            autorCita: ultimoEstado.autor_cita,
+            fuenteCredito: ultimoEstado.fuente_credito,
+            fotoFinalUrl: ultimoEstado.foto_url,
+            fotoSecundariaUrl: ultimoEstado.foto_secundaria_url,
+            focoVertical: ultimoEstado.foco_vertical,
+            expandirSinCloudinary: false,
+            esUrgente: ultimoEstado.urgente,
+            esHistoria: false,
+            modoVisual: comando
+          });
+          ultimoEstado.imagen_buffer = imageBuffer;
+
+          return responderConPlacaYCopyExtenso(res, {
+            ok: true,
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            reply_markup_json: replyMarkupJson,
+            url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
+            imagen_base64: imageBuffer.toString('base64')
+          }, comando === 'duelo' ? '⚡ MODO DUELO 2 FOTOS APLICADO:' : '🔍 MODO LUPA PIP APLICADO:');
+        }
+
+        if (comando === 'cita' || comando === 'dato') {
+          if (comando === 'dato') {
+            ultimoEstado.dato_clave = argumento ? argumento.toUpperCase() : extraerDatoClaveAutomatico(ultimoEstado);
+          } else {
+            ultimoEstado.autor_cita = argumento ? argumento.toUpperCase() : extraerAutorCitaAutomatico(ultimoEstado);
+          }
+
+          const imageBuffer = await renderizarFlyer({
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            datoClave: ultimoEstado.dato_clave,
+            autorCita: ultimoEstado.autor_cita,
+            fuenteCredito: ultimoEstado.fuente_credito,
+            fotoFinalUrl: ultimoEstado.foto_url,
+            focoVertical: ultimoEstado.foco_vertical,
+            expandirSinCloudinary: false,
+            esUrgente: ultimoEstado.urgente,
+            esHistoria: false,
+            modoVisual: comando
+          });
+          ultimoEstado.modo_visual = comando;
+          ultimoEstado.imagen_buffer = imageBuffer;
+
+          return responderConPlacaYCopyExtenso(res, {
+            ok: true,
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            reply_markup_json: replyMarkupJson,
+            url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
+            imagen_base64: imageBuffer.toString('base64')
+          }, comando === 'cita' ? '💬 MODO CITA PERIODÍSTICA APLICADO:' : '📊 MODO DATO DE IMPACTO APLICADO:');
+        }
+
+        if (comando === 'carrusel') {
+          const slides = await generarSlidesCarruselConIA(ultimoEstado.titulo, ultimoEstado.bajada, ultimoEstado.copy);
+
+          // Busca una segunda foto distinta para la Placa 2/3 así el carrusel tiene variedad visual real
+          let fotoSlide2 = ultimoEstado.foto_secundaria_url;
+          if (!fotoSlide2) {
+            const cands2 = await obtenerCandidatasFotoWeb(
+              ultimoEstado.busqueda_foto_secundaria || ultimoEstado.busqueda_foto_web || ultimoEstado.titulo,
+              ultimoEstado.fotos_usadas || [ultimoEstado.foto_original_url]
+            );
+            if (cands2[0]) {
+              fotoSlide2 = cands2[0].dataUrl;
+              ultimoEstado.foto_secundaria_url = fotoSlide2;
+            }
+          }
+
+          const modosCarrusel = ['carrusel_portada', 'carrusel_claves', 'carrusel_cierre'];
+          const fotosPorSlide = [
+            ultimoEstado.foto_url,
+            fotoSlide2 || ultimoEstado.foto_url,
+            ultimoEstado.foto_url
+          ];
+
+          const buffers = [];
+          for (let i = 0; i < 3; i++) {
+            const buf = await renderizarFlyer({
+              categoria: ultimoEstado.categoria,
+              titulo: slides[i].titulo,
+              destacar: slides[i].destacar,
+              bajada: slides[i].bajada,
+              fuenteCredito: ultimoEstado.fuente_credito,
+              fotoFinalUrl: fotosPorSlide[i],
+              focoVertical: ultimoEstado.foco_vertical,
+              expandirSinCloudinary: false,
+              esUrgente: ultimoEstado.urgente,
+              esHistoria: false,
+              modoVisual: modosCarrusel[i],
+              numeroSlide: `0${i + 1} / 03`
+            });
+            buffers.push(buf);
+          }
+
+          ultimoEstado.imagen_buffer = buffers[0];
+          ultimoEstado.carrusel_buffers = buffers;
+
+          // Envía las placas 2/3 y 3/3 con 2.5s de espera para que lleguen a Telegram DESPUÉS de la portada 1/3
+          setTimeout(async () => {
+            for (let i = 1; i < 3; i++) {
+              const formSlide = new FormData();
+              formSlide.append('chat_id', EDITOR_CHAT_ID);
+              formSlide.append('photo', new Blob([buffers[i]], { type: 'image/png' }), `carrusel_${i + 1}.png`);
+              formSlide.append('caption', `📑 Placa ${i + 1}/3 del carrusel (${i === 1 ? 'Las Claves' : 'Impacto y Cierre'})`);
+              await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`, { method: 'POST', body: formSlide });
+            }
+          }, 2500);
+
+          return responderConPlacaYCopyExtenso(res, {
+            ok: true,
+            categoria: ultimoEstado.categoria,
+            titulo: slides[0].titulo,
+            destacar: slides[0].destacar,
+            bajada: slides[0].bajada,
+            reply_markup_json: replyMarkupJson,
+            url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
+            imagen_base64: buffers[0].toString('base64')
+          }, '📑 CARRUSEL 3X LISTO (Placa 1/3 Portada):');
+        }
+
+        if (comando === 'auditar' || comando === 'comandoauditar') {
+          const { urlFinal, urlOriginal, focoVertical, fuenteAuto } = await auditarYResolverImagen({
+            fotoCandidataUrl: '',
+            esFotoManualDelEditor: false,
+            titulo: ultimoEstado.titulo,
+            bajada: ultimoEstado.bajada,
+            categoria: ultimoEstado.categoria,
+            busquedasSugeridas: [argumento || ultimoEstado.busqueda_foto_web || ultimoEstado.titulo, ultimoEstado.busqueda_foto_secundaria],
+            promptIaSugerido: ultimoEstado.prompt_imagen_ia,
+            forzarBusquedaNueva: true,
+            urlsExcluidas: ultimoEstado.fotos_usadas || [ultimoEstado.foto_original_url]
+          });
+
+          const fuenteFinal = fuenteAuto || ultimoEstado.fuente_credito;
+          const imageBuffer = await renderizarFlyer({
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            datoClave: ultimoEstado.dato_clave,
+            autorCita: ultimoEstado.autor_cita,
+            fuenteCredito: fuenteFinal,
+            fotoFinalUrl: urlFinal,
+            focoVertical,
+            expandirSinCloudinary: false,
+            esUrgente: ultimoEstado.urgente,
+            esHistoria: false,
+            modoVisual: 'estandar'
+          });
+
+          ultimoEstado.foto_url = urlFinal;
+          ultimoEstado.foto_original_url = urlOriginal || urlFinal;
+          ultimoEstado.fotos_usadas = [...(ultimoEstado.fotos_usadas || []), urlOriginal, urlFinal].filter(Boolean);
+          ultimoEstado.foco_vertical = focoVertical;
+          ultimoEstado.fuente_credito = fuenteFinal;
+          ultimoEstado.modo_visual = 'estandar';
+          ultimoEstado.imagen_buffer = imageBuffer;
+
+          return responderConPlacaYCopyExtenso(res, {
+            ok: true,
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            reply_markup_json: replyMarkupJson,
+            url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
+            imagen_base64: imageBuffer.toString('base64')
+          }, '🕵️ NUEVA FOTO HD APLICADA:');
+        }
+
+        if (comando === 'historia' || comando === 'comandohistoria') {
+          const historiaBuffer = await renderizarFlyer({
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            datoClave: ultimoEstado.dato_clave,
+            autorCita: ultimoEstado.autor_cita,
+            fuenteCredito: ultimoEstado.fuente_credito,
+            fotoFinalUrl: ultimoEstado.foto_url,
+            focoVertical: ultimoEstado.foco_vertical,
+            expandirSinCloudinary: ultimoEstado.fill_mode === 'contain',
+            esUrgente: ultimoEstado.urgente,
+            esHistoria: true,
+            modoVisual: 'estandar'
+          });
+          ultimoEstado.historia_buffer = historiaBuffer;
+          return responderConPlacaYCopyExtenso(res, {
+            ok: true,
+            es_historia: true,
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            reply_markup_json: replyMarkupJson,
+            url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-historia.png?t=${Date.now()}`,
+            imagen_base64: historiaBuffer.toString('base64')
+          }, '📱 FORMATO HISTORIA 9:16 LISTO:');
+        }
+
+        if (comando === 'expandir' || comando === 'comandoexpandir') {
+          const imageBuffer = await renderizarFlyer({
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            datoClave: ultimoEstado.dato_clave,
+            autorCita: ultimoEstado.autor_cita,
+            fuenteCredito: ultimoEstado.fuente_credito,
+            fotoFinalUrl: ultimoEstado.foto_url,
+            focoVertical: ultimoEstado.foco_vertical,
+            expandirSinCloudinary: true,
+            esUrgente: ultimoEstado.urgente,
+            esHistoria: false,
+            modoVisual: 'estandar'
+          });
+
+          ultimoEstado.fill_mode = 'contain';
+          ultimoEstado.modo_visual = 'estandar';
+          ultimoEstado.imagen_buffer = imageBuffer;
+
+          return responderConPlacaYCopyExtenso(res, {
+            ok: true,
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            reply_markup_json: replyMarkupJson,
+            url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
+            imagen_base64: imageBuffer.toString('base64')
+          }, '↔️ FOTO EXPANDIDA CON FONDO DESENFOCADO:');
+        }
+
+        if (comando === 'urgente' || comando === 'comandourgente') {
+          const nuevaCat = ultimoEstado.categoria.includes('URGENTE') ? ultimoEstado.categoria : `URGENTE / ${ultimoEstado.categoria.split('/')[0].trim()}`;
+          const imageBuffer = await renderizarFlyer({
+            categoria: nuevaCat,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            datoClave: ultimoEstado.dato_clave,
+            autorCita: ultimoEstado.autor_cita,
+            fuenteCredito: ultimoEstado.fuente_credito,
+            fotoFinalUrl: ultimoEstado.foto_url,
+            fotoSecundariaUrl: ultimoEstado.foto_secundaria_url,
+            focoVertical: ultimoEstado.foco_vertical,
+            expandirSinCloudinary: ultimoEstado.fill_mode === 'contain',
+            esUrgente: true,
+            esHistoria: false,
+            modoVisual: ultimoEstado.modo_visual
+          });
+          ultimoEstado.categoria = nuevaCat;
+          ultimoEstado.urgente = true;
+          ultimoEstado.imagen_buffer = imageBuffer;
+
+          return responderConPlacaYCopyExtenso(res, {
+            ok: true,
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            reply_markup_json: replyMarkupJson,
+            url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
+            imagen_base64: imageBuffer.toString('base64')
+          }, '🚨 MODO URGENTE APLICADO:');
+        }
+
+        if (comando === 'normal' || comando === 'comandonormal') {
+          const imageBuffer = await renderizarFlyer({
+            categoria: ultimoEstado.categoria.replace(/^URGENTE\s*\/\s*/i, ''),
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            datoClave: ultimoEstado.dato_clave,
+            autorCita: ultimoEstado.autor_cita,
+            fuenteCredito: ultimoEstado.fuente_credito,
+            fotoFinalUrl: ultimoEstado.foto_url,
+            focoVertical: ultimoEstado.foco_vertical,
+            expandirSinCloudinary: false,
+            esUrgente: false,
+            esHistoria: false,
+            modoVisual: 'estandar'
+          });
+          ultimoEstado.urgente = false;
+          ultimoEstado.fill_mode = 'cover';
+          ultimoEstado.modo_visual = 'estandar';
+          ultimoEstado.imagen_buffer = imageBuffer;
+
+          return responderConPlacaYCopyExtenso(res, {
+            ok: true,
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            reply_markup_json: replyMarkupJson,
+            url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
+            imagen_base64: imageBuffer.toString('base64')
+          }, '🔵 MODO ESTÁNDAR APLICADO:');
+        }
+
+        if (comando === 'ia' || comando === 'comandoia') {
+          const promptFinal = argumento || ultimoEstado.prompt_imagen_ia;
+          const nuevaUrlIA = construirUrlPollinationsHD(promptFinal);
+          const descargadaIA = await descargarYValidarImagen(nuevaUrlIA, 9000);
+          const fotoFinalIA = descargadaIA ? descargadaIA.dataUrl : nuevaUrlIA;
+
+          const imageBuffer = await renderizarFlyer({
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            datoClave: ultimoEstado.dato_clave,
+            autorCita: ultimoEstado.autor_cita,
+            fuenteCredito: 'ILUSTRACIÓN',
+            fotoFinalUrl: fotoFinalIA,
+            focoVertical: '30%',
+            expandirSinCloudinary: false,
+            esUrgente: ultimoEstado.urgente,
+            esHistoria: false,
+            modoVisual: ultimoEstado.modo_visual
+          });
+
+          ultimoEstado.foto_url = fotoFinalIA;
+          ultimoEstado.foto_original_url = nuevaUrlIA;
+          ultimoEstado.fuente_credito = 'ILUSTRACIÓN';
+          ultimoEstado.imagen_buffer = imageBuffer;
+
+          return responderConPlacaYCopyExtenso(res, {
+            ok: true,
+            categoria: ultimoEstado.categoria,
+            titulo: ultimoEstado.titulo,
+            destacar: ultimoEstado.destacar,
+            bajada: ultimoEstado.bajada,
+            reply_markup_json: replyMarkupJson,
+            url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
+            imagen_base64: imageBuffer.toString('base64')
+          }, '🎨 ILUSTRACIÓN IA APLICADA:');
+        }
       }
-
-      ultimoEstado.imagen_buffer = buffers[0];
-      ultimoEstado.carrusel_buffers = buffers;
-
-      for (let i = 1; i < 3; i++) {
-        const formSlide = new FormData();
-        formSlide.append('chat_id', EDITOR_CHAT_ID);
-        formSlide.append('photo', new Blob([buffers[i]], { type: 'image/png' }), `carrusel_${i + 1}.png`);
-        formSlide.append('caption', `📑 Placa ${i + 1}/3 del carrusel`);
-        await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`, { method: 'POST', body: formSlide });
-      }
-
-      return responderConPlacaYCopyExtenso(res, {
-        ok: true,
-        categoria: ultimoEstado.categoria,
-        titulo: slides[0].titulo,
-        destacar: slides[0].destacar,
-        bajada: slides[0].bajada,
-        reply_markup_json: replyMarkupJson,
-        url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
-        imagen_base64: buffers[0].toString('base64')
-      });
     }
 
-    if ((comando === 'auditar' || comando === 'comandoauditar') && ultimoEstado.titulo) {
-      const { urlFinal, urlOriginal, focoVertical, fuenteAuto } = await auditarYResolverImagen({
-        fotoCandidataUrl: '',
-        esFotoManualDelEditor: false,
-        titulo: ultimoEstado.titulo,
-        bajada: ultimoEstado.bajada,
-        categoria: ultimoEstado.categoria,
-        busquedasSugeridas: [argumento || ultimoEstado.busqueda_foto_web || ultimoEstado.titulo, ultimoEstado.busqueda_foto_secundaria],
-        promptIaSugerido: ultimoEstado.prompt_imagen_ia,
-        forzarBusquedaNueva: true
-      });
-
-      const fuenteFinal = fuenteAuto || ultimoEstado.fuente_credito;
-      const imageBuffer = await renderizarFlyer({
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        datoClave: ultimoEstado.dato_clave,
-        autorCita: ultimoEstado.autor_cita,
-        fuenteCredito: fuenteFinal,
-        fotoFinalUrl: urlFinal,
-        focoVertical,
-        expandirSinCloudinary: false,
-        esUrgente: ultimoEstado.urgente,
-        esHistoria: false,
-        modoVisual: 'estandar'
-      });
-
-      ultimoEstado.foto_url = urlFinal;
-      ultimoEstado.foto_original_url = urlOriginal || urlFinal;
-      ultimoEstado.foco_vertical = focoVertical;
-      ultimoEstado.fuente_credito = fuenteFinal;
-      ultimoEstado.imagen_buffer = imageBuffer;
-
-      return responderConPlacaYCopyExtenso(res, {
-        ok: true,
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        reply_markup_json: replyMarkupJson,
-        url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
-        imagen_base64: imageBuffer.toString('base64')
-      });
-    }
-
-    if ((comando === 'historia' || comando === 'comandohistoria') && ultimoEstado.titulo) {
-      const historiaBuffer = await renderizarFlyer({
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        datoClave: ultimoEstado.dato_clave,
-        autorCita: ultimoEstado.autor_cita,
-        fuenteCredito: ultimoEstado.fuente_credito,
-        fotoFinalUrl: ultimoEstado.foto_url,
-        focoVertical: ultimoEstado.foco_vertical,
-        expandirSinCloudinary: ultimoEstado.fill_mode === 'contain',
-        esUrgente: ultimoEstado.urgente,
-        esHistoria: true,
-        modoVisual: ultimoEstado.modo_visual
-      });
-      ultimoEstado.historia_buffer = historiaBuffer;
-      return responderConPlacaYCopyExtenso(res, {
-        ok: true,
-        es_historia: true,
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        reply_markup_json: replyMarkupJson,
-        url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-historia.png?t=${Date.now()}`,
-        imagen_base64: historiaBuffer.toString('base64')
-      });
-    }
-
-    if ((comando === 'expandir' || comando === 'comandoexpandir') && ultimoEstado.titulo) {
-      const imageBuffer = await renderizarFlyer({
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        datoClave: ultimoEstado.dato_clave,
-        autorCita: ultimoEstado.autor_cita,
-        fuenteCredito: ultimoEstado.fuente_credito,
-        fotoFinalUrl: ultimoEstado.foto_url,
-        focoVertical: ultimoEstado.foco_vertical,
-        expandirSinCloudinary: true,
-        esUrgente: ultimoEstado.urgente,
-        esHistoria: false,
-        modoVisual: 'estandar'
-      });
-
-      ultimoEstado.fill_mode = 'contain';
-      ultimoEstado.modo_visual = 'estandar';
-      ultimoEstado.imagen_buffer = imageBuffer;
-
-      return responderConPlacaYCopyExtenso(res, {
-        ok: true,
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        reply_markup_json: replyMarkupJson,
-        url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
-        imagen_base64: imageBuffer.toString('base64')
-      });
-    }
-
-    if ((comando === 'urgente' || comando === 'comandourgente') && !argumento && !nuevaFotoTelegram && ultimoEstado.titulo) {
-      const nuevaCat = ultimoEstado.categoria.includes('URGENTE') ? ultimoEstado.categoria : `URGENTE / ${ultimoEstado.categoria.split('/')[0].trim()}`;
-      const imageBuffer = await renderizarFlyer({
-        categoria: nuevaCat,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        datoClave: ultimoEstado.dato_clave,
-        autorCita: ultimoEstado.autor_cita,
-        fuenteCredito: ultimoEstado.fuente_credito,
-        fotoFinalUrl: ultimoEstado.foto_url,
-        fotoSecundariaUrl: ultimoEstado.foto_secundaria_url,
-        focoVertical: ultimoEstado.foco_vertical,
-        expandirSinCloudinary: ultimoEstado.fill_mode === 'contain',
-        esUrgente: true,
-        esHistoria: false,
-        modoVisual: ultimoEstado.modo_visual
-      });
-      ultimoEstado.categoria = nuevaCat;
-      ultimoEstado.urgente = true;
-      ultimoEstado.imagen_buffer = imageBuffer;
-
-      return responderConPlacaYCopyExtenso(res, {
-        ok: true,
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        reply_markup_json: replyMarkupJson,
-        url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
-        imagen_base64: imageBuffer.toString('base64')
-      });
-    }
-
-    if ((comando === 'normal' || comando === 'comandonormal') && ultimoEstado.titulo) {
-      const imageBuffer = await renderizarFlyer({
-        categoria: ultimoEstado.categoria.replace(/^URGENTE\s*\/\s*/i, ''),
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        datoClave: ultimoEstado.dato_clave,
-        autorCita: ultimoEstado.autor_cita,
-        fuenteCredito: ultimoEstado.fuente_credito,
-        fotoFinalUrl: ultimoEstado.foto_url,
-        focoVertical: ultimoEstado.foco_vertical,
-        expandirSinCloudinary: false,
-        esUrgente: false,
-        esHistoria: false,
-        modoVisual: 'estandar'
-      });
-      ultimoEstado.urgente = false;
-      ultimoEstado.fill_mode = 'cover';
-      ultimoEstado.modo_visual = 'estandar';
-      ultimoEstado.imagen_buffer = imageBuffer;
-
-      return responderConPlacaYCopyExtenso(res, {
-        ok: true,
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        reply_markup_json: replyMarkupJson,
-        url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
-        imagen_base64: imageBuffer.toString('base64')
-      });
-    }
-
-    if ((comando === 'ia' || comando === 'comandoia') && ultimoEstado.titulo) {
-      const promptFinal = argumento || ultimoEstado.prompt_imagen_ia;
-      const nuevaUrlIA = construirUrlPollinationsHD(promptFinal);
-      const descargadaIA = await descargarYValidarImagen(nuevaUrlIA, 9000);
-      const fotoFinalIA = descargadaIA ? descargadaIA.dataUrl : nuevaUrlIA;
-
-      const imageBuffer = await renderizarFlyer({
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        datoClave: ultimoEstado.dato_clave,
-        autorCita: ultimoEstado.autor_cita,
-        fuenteCredito: 'ILUSTRACIÓN',
-        fotoFinalUrl: fotoFinalIA,
-        focoVertical: '30%',
-        expandirSinCloudinary: false,
-        esUrgente: ultimoEstado.urgente,
-        esHistoria: false,
-        modoVisual: ultimoEstado.modo_visual
-      });
-
-      ultimoEstado.foto_url = fotoFinalIA;
-      ultimoEstado.foto_original_url = nuevaUrlIA;
-      ultimoEstado.fuente_credito = 'ILUSTRACIÓN';
-      ultimoEstado.imagen_buffer = imageBuffer;
-
-      return responderConPlacaYCopyExtenso(res, {
-        ok: true,
-        categoria: ultimoEstado.categoria,
-        titulo: ultimoEstado.titulo,
-        destacar: ultimoEstado.destacar,
-        bajada: ultimoEstado.bajada,
-        reply_markup_json: replyMarkupJson,
-        url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
-        imagen_base64: imageBuffer.toString('base64')
-      });
-    }
-
+    // 9. PROCESAMIENTO DE NOTICIA NUEVA O EDICIÓN DE TEXTO (.editar)
     let textoParaProcesar = comando ? argumento : texto_crudo;
+    const esEdicion = comando === 'editar' || comando === 'modificar' || comando === 'comandoeditar';
+
+    if (esEdicion) {
+      await asegurarBorradorActivo();
+    }
+
+    // Guardia de seguridad: si llegó un comando desconocido sin texto ni foto, nunca dibuja una placa vacía
+    if (!textoParaProcesar && !nuevaFotoTelegram && !titulo) {
+      await enviarMensajeTelegram('ℹ️ Comando no reconocido o sin texto. Mandá .comandos para ver la lista completa.');
+      return res.json({ ok: true, descartado: true, imagen_base64: '' });
+    }
+
     const urlDetectada = textoParaProcesar.match(/https?:\/\/[^\s]+/i)?.[0];
     let fotoDeLink = '';
     let fuenteLink = '';
@@ -2851,7 +3100,6 @@ app.post('/generar', async (req, res) => {
 
     const antiguedadLink = calcularAntiguedadNoticia(extraidoLink.fechaPublicacion || contextoObj.fechaReciente);
     const fotoNuevaRecibida = nuevaFotoTelegram || fotoDeLink;
-    const esEdicion = comando === 'editar' || comando === 'modificar' || comando === 'comandoeditar';
     const esUrgente = comando === 'urgente' || comando === 'comandourgente' || (esEdicion && ultimoEstado.urgente);
 
     let promptImagenIA = ultimoEstado.prompt_imagen_ia;
@@ -2889,6 +3137,11 @@ app.post('/generar', async (req, res) => {
         noticiaIA.busqueda_foto_secundaria,
         noticiaIA.busqueda_foto_institucional
       ];
+    }
+
+    if (!titulo) {
+      await enviarMensajeTelegram('⚠️ No se pudo extraer un titular válido del mensaje enviado.');
+      return res.json({ ok: true, descartado: true, imagen_base64: '' });
     }
 
     let fotoFinalParaPlaca = esEdicion ? ultimoEstado.foto_url : '';
@@ -2935,6 +3188,7 @@ app.post('/generar', async (req, res) => {
       foto_url: fotoFinalParaPlaca,
       foto_original_url: fotoOriginalGuardar,
       foto_secundaria_url: '',
+      fotos_usadas: [fotoOriginalGuardar, fotoFinalParaPlaca].filter(Boolean),
       foco_vertical: focoVertical,
       categoria,
       titulo,
@@ -2958,6 +3212,7 @@ app.post('/generar', async (req, res) => {
 
     if (esEdicion) {
       ultimoEstado = nuevoEstado;
+      persistirEstadoEnDisco(ultimoEstado);
     } else {
       guardarEnColaBorradores(nuevoEstado);
     }
@@ -3012,4 +3267,4 @@ app.get('/ultimo-borrador', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`El Registro Sur 2K + Radar Web y Redes listo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`El Registro Sur 2K + Carrusel Editorial Agencia listo en puerto ${PORT}`));
