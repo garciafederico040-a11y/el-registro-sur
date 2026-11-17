@@ -79,7 +79,7 @@ let ultimoComandoTexto = '';
 let ultimoComandoTimestamp = 0;
 let indiceClaveGroq = 0;
 
-app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Blindaje Fotográfico activo'));
+app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + JSON Blindado activo'));
 
 const EMOJIS_SEGUROS_META = new Set([
   '🚨', '🔴', '🟠', '🟡', '🚧', '🚔', '🚒', '🚑', '🛑',
@@ -127,7 +127,6 @@ function limpiarPalabraSignos(p) {
   return String(p || '').replace(/^[^A-ZÁÉÍÓÚÜÑ0-9]+|[^A-ZÁÉÍÓÚÜÑ0-9]+$/gi, '').toUpperCase();
 }
 
-// Corrige errores de tipeo frecuentes de modelos LLM en español (ej. "elogó" -> "elogió", "fortes" -> "fuertes")
 function corregirOrtografiaIA(texto) {
   if (!texto) return '';
   return String(texto)
@@ -371,6 +370,53 @@ function obtenerListaClavesGroq() {
   return todas;
 }
 
+// PARSEADOR Y REPARADOR BLINDADO DE JSON: Nunca tira error de sintaxis aunque el modelo corte o meta comillas internas
+function parsearJsonSeguro(rawContent) {
+  const texto = String(rawContent || '').trim();
+  const match = texto.match(/\{[\s\S]*\}/);
+  const candidato = match ? match[0] : texto;
+
+  try {
+    return JSON.parse(candidato);
+  } catch (e1) {
+    try {
+      const reparado = candidato
+        .replace(/,\s*([\]}])/g, '$1')
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]+/g, ' ');
+      return JSON.parse(reparado);
+    } catch (e2) {
+      // Rescate campo por campo por expresión regular si el JSON vino malformado o truncado
+      const extraerCampo = (clave) => {
+        const reg = new RegExp(`"${clave}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`, 'i');
+        const m = candidato.match(reg);
+        if (!m) return '';
+        return m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      };
+
+      const tituloRescatado = extraerCampo('titulo');
+      if (tituloRescatado) {
+        return {
+          descartar: /"descartar"\s*:\s*true/i.test(candidato),
+          motivo_descarte: extraerCampo('motivo_descarte'),
+          categoria: extraerCampo('categoria') || 'ACTUALIDAD / NOTICIAS',
+          titulo: tituloRescatado,
+          destacar: extraerCampo('destacar'),
+          bajada: extraerCampo('bajada'),
+          dato_clave: extraerCampo('dato_clave'),
+          autor_cita: extraerCampo('autor_cita'),
+          fuente_credito: extraerCampo('fuente_credito') || 'PRENSA',
+          copy: extraerCampo('copy') || `${tituloRescatado}\n\n${extraerCampo('bajada')}`,
+          busqueda_foto_web: extraerCampo('busqueda_foto_web') || tituloRescatado,
+          busqueda_foto_respaldo: extraerCampo('busqueda_foto_respaldo'),
+          busqueda_foto_institucional: extraerCampo('busqueda_foto_institucional'),
+          prompt_imagen_ia: extraerCampo('prompt_imagen_ia') || 'Argentina journalism photography'
+        };
+      }
+      throw e1;
+    }
+  }
+}
+
 async function llamarGroqChat(messages) {
   const claves = obtenerListaClavesGroq();
   const totalIntentos = Math.max(claves.length * 2, 4);
@@ -381,12 +427,17 @@ async function llamarGroqChat(messages) {
     const usarJsonMode = intento < totalIntentos - 1;
 
     try {
-      const bodyPayload = { model: 'openai/gpt-oss-120b', temperature: 0.2, messages };
+      const bodyPayload = {
+        model: 'openai/gpt-oss-120b',
+        temperature: 0.2,
+        max_tokens: 4096,
+        messages
+      };
       if (usarJsonMode) bodyPayload.response_format = { type: 'json_object' };
 
       const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
-        signal: AbortSignal.timeout(16000),
+        signal: AbortSignal.timeout(18000),
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify(bodyPayload)
       });
@@ -404,8 +455,7 @@ async function llamarGroqChat(messages) {
 
       const data = await resp.json();
       const rawContent = data?.choices?.[0]?.message?.content || '{}';
-      const matchJson = rawContent.match(/\{[\s\S]*\}/);
-      return JSON.parse(matchJson ? matchJson[0] : rawContent);
+      return parsearJsonSeguro(rawContent);
     } catch (e) {
       ultimoError = e.message;
       if (intento === totalIntentos - 1) throw new Error(ultimoError);
@@ -414,7 +464,6 @@ async function llamarGroqChat(messages) {
   }
 }
 
-// AUDITOR VISUAL ESTRICTO: Rechaza paisajes vacíos en notas políticas, caras deformes por IA, videojuegos o logos
 async function auditarFotoConVisionIA(dataUrl, titulo, bajada, categoria = '', metaDescripcionFoto = '') {
   const claves = obtenerListaClavesGroq();
   const apiKey = claves[(indiceClaveGroq++) % claves.length];
@@ -426,7 +475,7 @@ BAJADA: "${bajada}"
 ORIGEN DE LA FOTO: "${metaDescripcionFoto}"
 
 REGLAS DE RECHAZO ESTRICTO ("aprobada": false):
-1. RECHAZAR SI ES UN PAISAJE DE MONTAÑAS, RUTA VACÍA O NATURALEZA cuando la noticia trata sobre políticos, empresarios, economía, reuniones, sesiones o judiciales (ej: si habla de Vidal, Pavanello, Milei, salarios o leyes y la foto muestra montañas o una ruta vacía, RECHAZARLA SIEMPRE).
+1. RECHAZAR SI ES UN PAISAJE DE MONTAÑAS, RUTA VACÍA O NATURALEZA cuando la noticia trata sobre políticos, empresarios, economía, reuniones, sesiones o judiciales.
 2. RECHAZAR si es una imagen generada por IA con personas o caras deformadas, o una captura de videojuego (Halo, soldados, ficción), meme o caricatura.
 3. RECHAZAR si es el logo genérico de un diario, un banner publicitario o tiene texto gigante encima.
 4. APROBAR ("aprobada": true) únicamente si es una fotografía periodística real y coherente que muestra al protagonista, institución, edificio oficial o escena real del hecho.
@@ -446,6 +495,7 @@ Devolvé SOLO este JSON:
       body: JSON.stringify({
         model: 'meta-llama/llama-4-scout-17b-16e-instruct',
         temperature: 0.1,
+        max_tokens: 500,
         response_format: { type: 'json_object' },
         messages: [{
           role: 'user',
@@ -460,8 +510,7 @@ Devolvé SOLO este JSON:
     if (resp.ok) {
       const data = await resp.json();
       const raw = data?.choices?.[0]?.message?.content || '{}';
-      const match = raw.match(/\{[\s\S]*\}/);
-      return JSON.parse(match ? match[0] : raw);
+      return parsearJsonSeguro(raw);
     }
 
     if (metaDescripcionFoto) {
@@ -559,7 +608,6 @@ async function transcribirAudioConGroq(audioUrl) {
   return (data.text || '').slice(0, 1800);
 }
 
-// Si un artículo viene desde Google News RSS, busca la URL original del diario para poder extraer su og:image y su cuerpo real
 async function resolverUrlOriginalDesdeBuscador(titulo, medio = '') {
   try {
     const tituloLimpio = String(titulo || '').replace(/\s+-\s+[^-]+$/, '').trim();
@@ -787,7 +835,6 @@ function ordenarCandidatasRelevantes(candidatas, ignorarHistorial = false) {
     if (regexImpactoNacional.test(c.titulo)) puntos += 35;
     if (c.categoriaOrigen === 'espectaculos') puntos += regexBombasEspectaculos.test(c.titulo) ? 32 : -5;
 
-    // Premia fuertemente los portales con link directo y foto real para no depender de Google News
     if (!c.link.includes('news.google.com')) puntos += 25;
     if (c.fotoRss) puntos += 20;
 
@@ -924,7 +971,6 @@ async function buscarFotoEnWikipedia(consulta) {
   }
 }
 
-// Extractor reparado de Bing Imágenes (soporta comillas escapadas &quot; y literales ") + Bing News + Wikipedia
 async function obtenerCandidatasFotoWeb(consulta) {
   if (!consulta || consulta.trim().length < 3) return [];
   const consultaLimpia = consulta.replace(/orcolandia|kukardo|mandril|casta/gi, '').trim();
@@ -944,7 +990,6 @@ async function obtenerCandidatasFotoWeb(consulta) {
     });
     const html = await resp.text();
 
-    // Regex reparado: captura murl&quot;:&quot;https://...&quot; directamente en el HTML de Bing
     const matches = [
       ...html.matchAll(/murl&quot;:&quot;(https?:\/\/[^&"]+)&quot;[\s\S]{0,300}?t&quot;:&quot;([^&"]*)&quot;/gi),
       ...html.matchAll(/murl&quot;:&quot;(https?:\/\/[^&"]+)&quot;/gi)
@@ -965,7 +1010,6 @@ async function obtenerCandidatasFotoWeb(consulta) {
   return descargadas.filter(Boolean);
 }
 
-// Búsqueda escalonada en 3 niveles (1. Específica -> 2. Figura/Entidad principal -> 3. Institución/Lugar) auditada por IA
 async function auditarYResolverImagen({
   fotoCandidataUrl,
   esFotoManualDelEditor,
@@ -1014,7 +1058,7 @@ async function auditarYResolverImagen({
 }
 
 // ============================================================================
-// CEREBRO EDITORIAL + BÚSQUEDA FOTOGRÁFICA ESCALONADA EN 3 NIVELES
+// CEREBRO EDITORIAL (JSON PLANO SIN ARRAYS PARA CERO ERRORES DE SINTAXIS)
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
@@ -1024,8 +1068,8 @@ async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = fa
   const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), medio periodístico digital con sede en Caleta Olivia, Santa Cruz, que cubre noticias locales, provinciales y nacionales de Argentina.
 IDIOMA: Castellano de Argentina 100% natural, fluido y sin errores ortográficos (escribí siempre "elogió", jamás "elogó").
 
-REGLA DE ORO DE VERIFICACIÓN Y GEOGRAFÍA (FACT-CHECK 2B Y PROHIBIDO INVENTAR DATOS):
-- VERIFICACIÓN ESTRICTA: Usá ÚNICAMENTE los hechos, lugares, fechas, nombres y cifras confirmados en el texto recibido. PROHIBIDO inventar lugares de reuniones o licitaciones que no figuren en el texto.
+REGLA DE ORO DE VERIFICACIÓN Y GEOGRAFÍA:
+- VERIFICACIÓN ESTRICTA: Usá ÚNICAMENTE los hechos, lugares, fechas, nombres y cifras confirmados en el texto recibido. PROHIBIDO inventar reuniones o licitaciones que no figuren en el texto.
 - DESCARTE SILENCIOSO ("descartar": true): Si el texto recibido carece de información verificable suficiente o es relleno automático, devolvé "descartar": true.
 - PROHIBIDO INVENTAR QUE ALGO FUE EN CALETA OLIVIA: Mencioná a Caleta Olivia ÚNICAMENTE cuando el hecho ocurra allí.
 
@@ -1037,7 +1081,7 @@ REGLA 2 — SUBTÍTULO DE LA PLACA ("bajada"): COHERENCIA Y ESTÉTICA DE 3 A 4 R
 - Redactá un subtítulo periodístico coherente, fluido y natural con todos sus artículos (de 20 a 32 palabras) que forme 3 renglones ideales o hasta 4 renglones bien cerrados.
 
 REGLA 3 — DESCRIPCIÓN EXTENSA Y DESGLOSADA PARA REDES ("copy" — ENTRE 1.300 Y 2.050 CARACTERES, TOPE MÁXIMO 2.200 DE META):
-Redactá una NOTA PERIODÍSTICA COMPLETA Y DESGLOSADA POR PUNTOS en texto plano separada por doble salto de línea (\\n\\n):
+Redactá una NOTA PERIODÍSTICA COMPLETA Y DESGLOSADA POR PUNTOS en texto plano separada por doble salto de línea (\\n\\n). Importante: dentro de "copy" usá comillas simples ('...') si necesitás citar algo para no romper el formato JSON:
 1. ENCABEZADO EN MAYÚSCULAS + 2 emojis seguros de la lista permitida.
 2. PÁRRAFO 1 (COPETE COMPLETO): Quiénes protagonizan el hecho, qué ocurrió, dónde ocurrió realmente y cuáles son los ejes centrales.
 3. 3 A 4 PÁRRAFOS TEMÁTICOS CON SUBTÍTULO EN LÍNEA ("Subtema clave: Desarrollo..."): Desglosá cada punto, antecedente o cifra con un subtítulo corto seguido de dos puntos al inicio del párrafo. Prohibido usar viñetas, guiones o asteriscos.
@@ -1046,16 +1090,15 @@ Redactá una NOTA PERIODÍSTICA COMPLETA Y DESGLOSADA POR PUNTOS en texto plano 
 6. PREGUNTA DE DEBATE O CIERRE DINÁMICO + 👇: "¿...? Te leemos en comentarios 👇".
 7. BLOQUE DE 8 A 10 HASHTAGS EN MINÚSCULAS.
 
-REGLA 4 — BÚSQUEDA FOTOGRÁFICA ESCALONADA EN 3 NIVELES (CLAVE PARA ENCONTRAR FOTOS REALES SIEMPRE):
-- Si la nota menciona a alguien poco conocido junto a una figura famosa (ej: "Pavanello destaca políticas de Vidal"), los buscadores no conocen al menos famoso. Por eso debés entregar 3 búsquedas de lo específico a lo más conocido:
-  * "busqueda_foto_web": La figura pública o protagonista principal + su cargo/provincia (ej: "Claudio Vidal gobernador Santa Cruz").
-  * "busqueda_foto_respaldo": SOLO el nombre de la persona más famosa o la institución/empresa más conocida de la nota (ej: "Claudio Vidal" o "YPF Santa Cruz" o "Javier Milei").
-  * "busqueda_foto_institucional": El edificio oficial o lugar físico real del tema (ej: "Casa de Gobierno Rio Gallegos Santa Cruz" o "Congreso de la Nacion Argentina").
+REGLA 4 — BÚSQUEDA FOTOGRÁFICA ESCALONADA EN 3 NIVELES:
+- "busqueda_foto_web": La figura pública o protagonista principal + su cargo/provincia (ej: "Claudio Vidal gobernador Santa Cruz").
+- "busqueda_foto_respaldo": SOLO el nombre de la persona más famosa o la institución/empresa más conocida de la nota (ej: "Claudio Vidal" o "YPF Santa Cruz" o "Javier Milei").
+- "busqueda_foto_institucional": El edificio oficial o lugar físico real del tema (ej: "Casa de Gobierno Rio Gallegos Santa Cruz" o "Congreso de la Nacion Argentina").
 
 LISTA BLANCA DE EMOJIS PERMITIDOS EN "copy":
 🚨 🔴 🟠 🟡 🚧 🚔 🚒 🚑 🛑 💨 🌀 🌊 💧 ☔ ⛄ ⛅ ⚡ 🔥 💰 💵 📈 📉 📊 ⛽ 🏭 🚜 🚛 🚢 🐟 📢 📣 📰 📋 📄 📜 🏥 🏫 🎓 👷 🤝 📍 📅 🕒 ⚽ 🏆 🏅 🎭 🎶 👇 👉 📲 💬 ✅ ❌
 
-Devolvé ÚNICAMENTE este JSON:
+Devolvé ÚNICAMENTE este objeto JSON plano (sin arrays adentro):
 {
   "descartar": false,
   "motivo_descarte": "",
@@ -1067,11 +1110,6 @@ Devolvé ÚNICAMENTE este JSON:
   "autor_cita": "Nombre y cargo si hay cita, o vacío",
   "fuente_credito": "Crédito corto en MAYÚSCULAS",
   "copy": "Nota periodística extensa y verificada (1300 a 2050 caracteres, máximo 2200) con la estructura: TITULAR + 2 emojis\\n\\nCopete inicial\\n\\nSubtema 1: Desarrollo...\\n\\nSubtema 2: Desarrollo...\\n\\nSubtema 3: Desarrollo...\\n\\nPárrafo de resolución.\\n\\nToda la cobertura en @elregistrosur.\\n\\n¿Pregunta de debate? Te leemos en comentarios 👇\\n\\n#hashtags",
-  "slides_carrusel": [
-    { "titulo": "TITULAR PORTADA", "destacar": "FRASE CON SENTIDO", "bajada": "Subtítulo coherente de 20 a 30 palabras sobre el hecho principal." },
-    { "titulo": "ANTECEDENTES Y DATOS CLAVE", "destacar": "DATOS CLAVE", "bajada": "Subtítulo coherente de 20 a 30 palabras con las cifras y el contexto." },
-    { "titulo": "IMPACTO Y DEFINICIONES", "destacar": "DEFINICIONES", "bajada": "Subtítulo coherente de 20 a 30 palabras sobre lo que viene." }
-  ],
   "busqueda_foto_web": "Figura pública principal o protagonista + cargo/lugar",
   "busqueda_foto_respaldo": "Nombre de la persona más famosa o institución principal de la noticia",
   "busqueda_foto_institucional": "Edificio oficial o escenario físico real del hecho",
@@ -1100,14 +1138,33 @@ Devolvé ÚNICAMENTE este JSON:
   parsed.bajada = limpiarBajadaPeriodistica(parsed.bajada);
   parsed.copy = filtrarEmojisSegurosRedes(parsed.copy);
 
-  if (Array.isArray(parsed.slides_carrusel)) {
-    parsed.slides_carrusel = parsed.slides_carrusel.map(s => {
-      const td = asegurarDestacadoEnTitulo(s.titulo, s.destacar);
-      return { titulo: td.titulo, destacar: td.destacar, bajada: limpiarBajadaPeriodistica(s.bajada) };
-    });
-  }
-
   return parsed;
+}
+
+// Generador exclusivo para cuando se pide el botón .carrusel
+async function generarSlidesCarruselConIA(tituloBase, copyBase) {
+  try {
+    const promptCarrusel = `A partir de esta noticia ("${tituloBase}" - ${String(copyBase || '').slice(0, 1000)}), redactá 3 placas en castellano para un carrusel de Instagram (Placa 1: Portada, Placa 2: Datos clave y contexto, Placa 3: Impacto y definiciones).
+Cada placa debe tener "titulo" (5 a 7 palabras en MAYÚSCULAS sin emojis), "destacar" (frase con sentido completo dentro del título) y "bajada" (oración coherente de 20 a 28 palabras).
+Devolvé ÚNICAMENTE este JSON plano:
+{
+  "t1": "TITULAR PLACA 1", "d1": "DESTACAR 1", "b1": "Bajada placa 1 de 20 a 28 palabras.",
+  "t2": "TITULAR PLACA 2", "d2": "DESTACAR 2", "b2": "Bajada placa 2 de 20 a 28 palabras.",
+  "t3": "TITULAR PLACA 3", "d3": "DESTACAR 3", "b3": "Bajada placa 3 de 20 a 28 palabras."
+}`;
+    const res = await llamarGroqChat([{ role: 'user', content: promptCarrusel }]);
+    return [
+      { ...asegurarDestacadoEnTitulo(res.t1 || tituloBase, res.d1), bajada: limpiarBajadaPeriodistica(res.b1 || ultimoEstado.bajada) },
+      { ...asegurarDestacadoEnTitulo(res.t2 || 'LOS PUNTOS CLAVE DEL TEMA', res.d2 || 'PUNTOS CLAVE'), bajada: limpiarBajadaPeriodistica(res.b2 || ultimoEstado.bajada) },
+      { ...asegurarDestacadoEnTitulo(res.t3 || 'IMPACTO Y DEFINICIONES', res.d3 || 'DEFINICIONES'), bajada: limpiarBajadaPeriodistica(res.b3 || ultimoEstado.bajada) }
+    ];
+  } catch (e) {
+    return [
+      { titulo: ultimoEstado.titulo, destacar: ultimoEstado.destacar, bajada: ultimoEstado.bajada },
+      { titulo: 'EL CONTEXTO Y LOS DATOS CLAVE', destacar: 'DATOS CLAVE', bajada: ultimoEstado.bajada },
+      { titulo: 'IMPACTO Y DEFINICIONES', destacar: 'DEFINICIONES', bajada: ultimoEstado.bajada }
+    ];
+  }
 }
 
 // ============================================================================
@@ -1444,7 +1501,6 @@ async function armarNoticiaDesdeCandidata(elegida, exigirFotoReal = false) {
     buscarContextoEnGoogleNews(elegida.titulo)
   ]);
 
-  // Si en el Radar la nota no tiene cuerpo de texto real ni contexto suficiente, pasa a la siguiente para no inventar datos
   const contenidoDisponible = `${elegida.bajadaRss || ''} ${extraido.parrafosReales || ''} ${contextoObj.texto || ''}`.trim();
   if (exigirFotoReal && contenidoDisponible.length < 140) {
     return null;
@@ -1473,7 +1529,6 @@ async function armarNoticiaDesdeCandidata(elegida, exigirFotoReal = false) {
     promptIaSugerido: noticiaIA.prompt_imagen_ia
   });
 
-  // Si es búsqueda automática del Radar y no encontró ninguna foto real coherente, pasa a otra noticia
   if (exigirFotoReal && !esFotoRealVerificada) {
     return null;
   }
@@ -1531,7 +1586,6 @@ async function generarDatosRadar(forzar = false) {
 
   ultimasTopCandidatas = ordenadas.slice(0, 5);
 
-  // Prueba hasta 4 candidatas exigiendo que tengan texto real y foto periodística real verificada
   for (const elegida of ordenadas.slice(0, 4)) {
     const resultado = await armarNoticiaDesdeCandidata(elegida, true);
     if (resultado) return resultado;
@@ -1618,27 +1672,32 @@ A partir de los hechos confirmados de hoy en Argentina y Santa Cruz, armá el RE
 
 REGLAS:
 - PROHIBIDO emojis en títulos y bajadas.
-- "destacar": Frase completa con sentido propio dentro del título (prohibido cortar nombres compuestos o en DE, LA, EL, A).
-- "bajada": Subtítulo coherente de 20 a 30 palabras con todos sus artículos.
+- "d1" a "d5": Frase completa con sentido propio dentro del título.
+- "b1" a "b5": Subtítulo coherente de 20 a 28 palabras.
 - En "copy", redactá una descripción extensa desglosando los 4 temas con subtítulos en línea (entre 1.200 y 2.000 caracteres, máx 2.200).
 
 Titulares del día:
 ${titulares}
 
-Devolvé ÚNICAMENTE este JSON:
+Devolvé ÚNICAMENTE este JSON plano:
 {
-  "slides": [
-    { "titulo": "LO QUE PASÓ HOY EN EL SUR", "destacar": "LO QUE PASÓ HOY", "bajada": "Repaso completo por los cuatro hechos más relevantes que marcaron la jornada informativa en Caleta Olivia, la provincia de Santa Cruz y el país." },
-    { "titulo": "TITULAR TEMA 1", "destacar": "FRASE CON SENTIDO", "bajada": "Oración informativa coherente y natural de 20 a 30 palabras explicando el hecho y su impacto directo." },
-    { "titulo": "TITULAR TEMA 2", "destacar": "FRASE CON SENTIDO", "bajada": "Oración informativa coherente y natural de 20 a 30 palabras explicando el hecho y su impacto directo." },
-    { "titulo": "TITULAR TEMA 3", "destacar": "FRASE CON SENTIDO", "bajada": "Oración informativa coherente y natural de 20 a 30 palabras explicando el hecho y su impacto directo." },
-    { "titulo": "TITULAR TEMA 4", "destacar": "FRASE CON SENTIDO", "bajada": "Oración informativa coherente y natural de 20 a 30 palabras explicando el hecho y su impacto directo." }
-  ],
+  "t1": "LO QUE PASÓ HOY EN EL SUR", "d1": "LO QUE PASÓ HOY", "b1": "Repaso completo por los cuatro hechos más relevantes que marcaron la jornada informativa en Caleta Olivia, la provincia de Santa Cruz y el país.",
+  "t2": "TITULAR TEMA 1", "d2": "FRASE CON SENTIDO", "b2": "Oración informativa coherente y natural de 20 a 28 palabras explicando el hecho y su impacto directo.",
+  "t3": "TITULAR TEMA 2", "d3": "FRASE CON SENTIDO", "b3": "Oración informativa coherente y natural de 20 a 28 palabras explicando el hecho y su impacto directo.",
+  "t4": "TITULAR TEMA 3", "d4": "FRASE CON SENTIDO", "b4": "Oración informativa coherente y natural de 20 a 28 palabras explicando el hecho y su impacto directo.",
+  "t5": "TITULAR TEMA 4", "d5": "FRASE CON SENTIDO", "b5": "Oración informativa coherente y natural de 20 a 28 palabras explicando el hecho y su impacto directo.",
   "copy": "RESUMEN DEL DÍA EN EL REGISTRO SUR 📰📍\\n\\nRepaso completo con los hechos más importantes de la jornada.\\n\\nTema 1: Desarrollo...\\n\\nTema 2: Desarrollo...\\n\\nTema 3: Desarrollo...\\n\\nTema 4: Desarrollo...\\n\\nToda la cobertura en @elregistrosur.\\n\\n¿Cuál de estos temas te parece más relevante hoy? Te leemos en comentarios 👇\\n\\n#noticias #elregistrosur #caletaolivia #santacruz #resumendeldia #patagonia #actualidad #argentina"
 }`;
 
   const parsed = await llamarGroqChat([{ role: 'user', content: promptResumen }]);
-  const slides = (parsed.slides || []).slice(0, 5);
+  const slides = [
+    { titulo: parsed.t1 || 'LO QUE PASÓ HOY EN EL SUR', destacar: parsed.d1 || 'LO QUE PASÓ HOY', bajada: parsed.b1 || 'Repaso por los temas más importantes de la jornada.' },
+    { titulo: parsed.t2 || 'ACTUALIDAD REGIONAL', destacar: parsed.d2 || 'ACTUALIDAD', bajada: parsed.b2 || '' },
+    { titulo: parsed.t3 || 'PANORAMA PROVINCIAL', destacar: parsed.d3 || 'PROVINCIAL', bajada: parsed.b3 || '' },
+    { titulo: parsed.t4 || 'AGENDA NACIONAL', destacar: parsed.d4 || 'NACIONAL', bajada: parsed.b4 || '' },
+    { titulo: parsed.t5 || 'CIERRE DE JORNADA', destacar: parsed.d5 || 'JORNADA', bajada: parsed.b5 || '' }
+  ].filter(s => s.bajada);
+
   const { urlFinal: fotoBase } = await auditarYResolverImagen({
     fotoCandidataUrl: '',
     esFotoManualDelEditor: false,
@@ -2052,14 +2111,7 @@ app.post('/generar', async (req, res) => {
     }
 
     if (comando === 'carrusel' && ultimoEstado.titulo) {
-      const noticiaIA = await procesarNoticiaConIA(`Generá el carrusel de 3 placas para esta noticia: ${ultimoEstado.titulo}. ${ultimoEstado.copy}`, 'Borrador ya verificado.', true);
-      const slides = (noticiaIA.slides_carrusel && noticiaIA.slides_carrusel.length >= 3)
-        ? noticiaIA.slides_carrusel.slice(0, 3)
-        : [
-            { titulo: ultimoEstado.titulo, destacar: ultimoEstado.destacar, bajada: ultimoEstado.bajada },
-            { titulo: 'EL CONTEXTO Y LOS DATOS CLAVE', destacar: 'DATOS CLAVE', bajada: ultimoEstado.bajada },
-            { titulo: 'IMPACTO Y DEFINICIONES', destacar: 'DEFINICIONES', bajada: ultimoEstado.bajada }
-          ];
+      const slides = await generarSlidesCarruselConIA(ultimoEstado.titulo, ultimoEstado.copy);
 
       const buffers = [];
       for (let i = 0; i < 3; i++) {
@@ -2484,4 +2536,4 @@ app.get('/ultimo-borrador', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`El Registro Sur 2K + Blindaje Fotográfico listo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`El Registro Sur 2K + JSON Blindado listo en puerto ${PORT}`));
