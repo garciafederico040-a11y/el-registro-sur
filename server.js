@@ -12,26 +12,32 @@ const TELEGRAM_TOKEN = '9253246227:AAFaJzhi3uxaoWLuxg9E0HZ4WfT0YdPts6w';
 const EDITOR_CHAT_ID = '6008268963';
 const CLAVE_GROQ_RESPALDO = ['gsk', 'C9XrhxVzidzc2quADlxqWGdyb3FYYXpRiM09cKPoYBu0jkb3QE8v'].join('_');
 
-// Los 21 portales completos (8 Regionales + 8 Nacionales + 5 Espectáculos)
+// Portales con prioridad de feeds RSS directos (entregan link original, foto og:image real y cuerpo completo)
 const FUENTES_RSS_RADAR = [
   { url: 'https://laopinionaustral.com.ar/feed/', medio: 'LA OPINIÓN AUSTRAL', categoria: 'regional' },
   { url: 'https://infocaleta.com/v2/feed/', medio: 'INFOCALETA', categoria: 'regional' },
+  { url: 'https://vocesyapuntes.com/feed/', medio: 'VOCES Y APUNTES', categoria: 'regional' },
+  { url: 'https://lavanguardianoticias.com.ar/feed/', medio: 'LA VANGUARDIA', categoria: 'regional' },
   { url: 'https://lagacetadesantacruz.com.ar/feed/', medio: 'LA GACETA SANTA CRUZ', categoria: 'regional' },
   { url: 'https://ecosdelsur.com/feed/', medio: 'ECOS DEL SUR', categoria: 'regional' },
-  { url: 'https://news.google.com/rss/search?q=' + encodeURIComponent('("Caleta Olivia" OR "Santa Cruz" OR "Claudio Vidal" OR "Ruta 3" OR site:tiemposur.com.ar OR site:adnsur.com.ar OR site:elpatagonico.com OR site:noticias.santacruz.gob.ar) when:24h') + '&hl=es-419&gl=AR&ceid=AR:es-419', medio: 'PATAGONIA', categoria: 'regional' },
+  { url: 'https://www.tiemposur.com.ar/rss/noticias.xml', medio: 'TIEMPOSUR', categoria: 'regional' },
+  { url: 'https://www.elpatagonico.com/rss/pages/home.xml', medio: 'EL PATAGÓNICO', categoria: 'regional' },
+  { url: 'https://www.adnsur.com.ar/rss/feed.xml', medio: 'ADNSUR', categoria: 'regional' },
+  { url: 'https://news.google.com/rss/search?q=' + encodeURIComponent('("Caleta Olivia" OR "Santa Cruz" OR "Claudio Vidal" OR site:tiemposur.com.ar OR site:noticias.santacruz.gob.ar) when:24h') + '&hl=es-419&gl=AR&ceid=AR:es-419', medio: 'SANTA CRUZ', categoria: 'regional' },
   { url: 'https://www.infobae.com/arc/outboundfeeds/rss/', medio: 'INFOBAE', categoria: 'nacional' },
   { url: 'https://www.lanacion.com.ar/arc/outboundfeeds/rss/', medio: 'LA NACIÓN', categoria: 'nacional' },
   { url: 'https://www.clarin.com/rss/lo-ultimo/', medio: 'CLARÍN', categoria: 'nacional' },
   { url: 'https://tn.com.ar/arc/outboundfeeds/rss/', medio: 'TN', categoria: 'nacional' },
+  { url: 'https://www.ambito.com/rss/pages/home.xml', medio: 'ÁMBITO', categoria: 'nacional' },
   { url: 'https://www.pagina12.com.ar/rss/portada', medio: 'PÁGINA 12', categoria: 'nacional' },
   { url: 'https://eleconomista.com.ar/feed/', medio: 'EL ECONOMISTA', categoria: 'nacional' },
-  { url: 'https://news.google.com/rss/search?q=' + encodeURIComponent('(site:tycsports.com OR site:iprofesional.com) when:12h') + '&hl=es-419&gl=AR&ceid=AR:es-419', medio: 'NACIONAL', categoria: 'nacional' },
+  { url: 'https://www.perfil.com/feed', medio: 'PERFIL', categoria: 'nacional' },
   { url: 'https://www.paparazzi.com.ar/feed/', medio: 'PAPARAZZI', categoria: 'espectaculos' },
   { url: 'https://exitoina.perfil.com/feed', medio: 'EXITOÍNA', categoria: 'espectaculos' },
-  { url: 'https://news.google.com/rss/search?q=' + encodeURIComponent('(site:primiciasya.com OR site:ciudad.com.ar OR site:pronto.com.ar) when:24h') + '&hl=es-419&gl=AR&ceid=AR:es-419', medio: 'ESPECTÁCULOS', categoria: 'espectaculos' }
+  { url: 'https://www.pronto.com.ar/rss/feed.xml', medio: 'PRONTO', categoria: 'espectaculos' }
 ];
 
-const DOMINIOS_PROHIBIDOS_IMG = /halo|xbox|playstation|nintendo|steam|epicgames|ign\.com|3djuegos|vandal|hobbyconsolas|meristation|kotaku|fandom|wikia|gamer|gaming|videojuego|minecraft|fortnite|gta|warthog|masterchief|meme|9gag|reddit|imgur|pinterest|deviantart|artstation|wallpaper|alphacoders|freepik|shutterstock|istock|vecteezy|flaticon|pngtree|tiktok/i;
+const DOMINIOS_PROHIBIDOS_IMG = /halo|xbox|playstation|nintendo|steam|epicgames|ign\.com|3djuegos|vandal|hobbyconsolas|meristation|kotaku|fandom|wikia|gamer|gaming|videojuego|minecraft|fortnite|gta|warthog|masterchief|meme|9gag|reddit|imgur|pinterest|deviantart|artstation|wallpaper|alphacoders|freepik|shutterstock|istock|vecteezy|flaticon|pngtree|tiktok|unsplash/i;
 
 let ultimoEstado = {
   foto_url: '',
@@ -73,7 +79,7 @@ let ultimoComandoTexto = '';
 let ultimoComandoTimestamp = 0;
 let indiceClaveGroq = 0;
 
-app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Blindaje Total activo'));
+app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Blindaje Fotográfico activo'));
 
 const EMOJIS_SEGUROS_META = new Set([
   '🚨', '🔴', '🟠', '🟡', '🚧', '🚔', '🚒', '🚑', '🛑',
@@ -84,7 +90,6 @@ const EMOJIS_SEGUROS_META = new Set([
   '👇', '👉', '📲', '💬', '✅', '❌'
 ]);
 
-// Traduce automáticamente emojis incompatibles de Unicode 13+ a su equivalente seguro en Facebook Web
 const MAPA_REEMPLAZO_EMOJIS = {
   '🌧': '☔', '🌨': '⛄', '❄': '⛄', '🌩': '⚡', '🌪': '💨', '🌬': '💨',
   '☀': '⛅', '🌤': '⛅', '🌡': '🔥', '⚠': '🚨', '🏛': '📢', '⚖': '📜',
@@ -98,19 +103,17 @@ const CONECTORES_COLGADOS = new Set([
   'Y', 'E', 'O', 'U', 'NI', 'QUE', 'SE', 'SU', 'SUS', 'LO', 'LE', 'LES', 'MAS', 'MÁS', 'MUY'
 ]);
 
-// Prefijos de nombres compuestos que JAMÁS pueden quedar cortados sin la palabra que les sigue (ej: RÍO + GALLEGOS)
 const PREFIJOS_COMPUESTOS = new Set([
   'RÍO', 'RIO', 'CALETA', 'PICO', 'PUERTO', 'SAN', 'SANTA', 'SANTO',
   'GENERAL', 'COMODORO', 'VILLA', 'CAÑADÓN', 'CANADON', 'GOBERNADOR',
   'PERITO', 'PIEDRA', 'PUNTA', 'BAHÍA', 'BAHIA', 'TIERRA', 'ZONA',
-  'GOLFO', 'CABO', 'LAGO', 'LAGUNA', 'CERRO', 'MONTE', ' SIERRA',
+  'GOLFO', 'CABO', 'LAGO', 'LAGUNA', 'CERRO', 'MONTE', 'SIERRA',
   'CASA', 'CORTE', 'BANCO', 'RIESGO', 'DÓLAR', 'DOLAR', 'RUTA',
   'SERVICIO', 'SERVICIOS', 'VIALIDAD', 'POLICÍA', 'POLICIA', 'ARMADA',
   'GRAN', 'JAVIER', 'CLAUDIO', 'CRISTINA', 'AXEL', 'PABLO', 'FERNANDO',
   'LUIS', 'JUAN', 'MARÍA', 'MARIA', 'LA', 'EL', 'LOS', 'LAS', '28', 'VEINTIOCHO'
 ]);
 
-// Segunda mitad de nombres propios que obligan a incluir la palabra anterior si quedó afuera
 const SUFIJOS_COMPUESTOS = new Set([
   'GALLEGOS', 'OLIVIA', 'TRUNCADO', 'DESEADO', 'JULIÁN', 'JULIAN',
   'CALAFATE', 'CHALTÉN', 'CHALTEN', 'TURBIO', 'ANTIGUOS', 'MORENO',
@@ -122,6 +125,18 @@ const SUFIJOS_COMPUESTOS = new Set([
 
 function limpiarPalabraSignos(p) {
   return String(p || '').replace(/^[^A-ZÁÉÍÓÚÜÑ0-9]+|[^A-ZÁÉÍÓÚÜÑ0-9]+$/gi, '').toUpperCase();
+}
+
+// Corrige errores de tipeo frecuentes de modelos LLM en español (ej. "elogó" -> "elogió", "fortes" -> "fuertes")
+function corregirOrtografiaIA(texto) {
+  if (!texto) return '';
+  return String(texto)
+    .replace(/\belogó\b/g, 'elogió')
+    .replace(/\bElogó\b/g, 'Elogió')
+    .replace(/\bELOGÓ\b/g, 'ELOGIÓ')
+    .replace(/\bfortes\b/gi, (m) => (m === m.toUpperCase() ? 'FUERTES' : 'fuertes'))
+    .replace(/\bprimer provincia\b/gi, 'primera provincia')
+    .replace(/\bprimer medida\b/gi, 'primera medida');
 }
 
 function calcularAntiguedadNoticia(fechaRaw) {
@@ -186,18 +201,19 @@ function registrarTemaEnviado(titulo) {
 
 function limpiarEmojis(texto) {
   if (!texto) return '';
-  return String(texto)
-    .replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, '')
-    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\u200D]/gu, '')
-    .replace(/\b(fortes)\b/gi, 'fuertes')
-    .replace(/^\s*(?:[0-9]+[\)\.\-]|\bL[íi]nea\s*[0-9]+\s*:|\bP[áa]rrafo\s*[0-9]+\s*:)\s*/gim, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+  return corregirOrtografiaIA(
+    String(texto)
+      .replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, '')
+      .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\u200D]/gu, '')
+      .replace(/^\s*(?:[0-9]+[\)\.\-]|\bL[íi]nea\s*[0-9]+\s*:|\bP[áa]rrafo\s*[0-9]+\s*:)\s*/gim, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+  );
 }
 
 function filtrarEmojisSegurosRedes(texto) {
   if (!texto) return '';
-  let limpio = String(texto)
+  let limpio = corregirOrtografiaIA(String(texto))
     .replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, '')
     .replace(/[\uFE0F\u200D]/g, '')
     .replace(/\*\*/g, '');
@@ -208,7 +224,6 @@ function filtrarEmojisSegurosRedes(texto) {
 
   limpio = limpio.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, (m) => EMOJIS_SEGUROS_META.has(m) ? m : '');
   limpio = limpio
-    .replace(/\b(fortes)\b/gi, (m) => (m === m.toUpperCase() ? 'FUERTES' : 'fuertes'))
     .replace(/^\s*(?:[0-9]+[\)\.\-]|\bL[íi]nea\s*[0-9]+\s*:|\bP[áa]rrafo\s*[0-9]+\s*:|\bTitular\s*:|\bCierre\s*:)\s*/gim, '')
     .replace(/\n---\n/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')
@@ -216,7 +231,6 @@ function filtrarEmojisSegurosRedes(texto) {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-  // Garantiza que la primera línea (encabezado del copy) tenga siempre 2 emojis seguros
   const bloques = limpio.split('\n\n');
   if (bloques.length > 0) {
     const emojisEnPrimera = [...bloques[0]].filter(ch => EMOJIS_SEGUROS_META.has(ch));
@@ -254,7 +268,6 @@ function prepararCaptionTelegram(prefijo, copyCompleto) {
   };
 }
 
-// Blindaje semántico de resaltado: jamás corta nombres compuestos ("RÍO GALLEGOS", "CALETA OLIVIA", "RUTA 3") ni conectores
 function asegurarDestacadoEnTitulo(titulo, destacar) {
   const tit = limpiarEmojis(titulo).toUpperCase();
   let des = limpiarEmojis(destacar).toUpperCase();
@@ -285,17 +298,14 @@ function asegurarDestacadoEnTitulo(titulo, destacar) {
     idxFin = Math.min(2, palabrasTit.length - 1);
   }
 
-  // 1. Si empieza en la segunda mitad de un nombre compuesto (ej. "GALLEGOS" y antes está "RÍO"), incluye la palabra anterior
   if (idxInicio > 0 && SUFIJOS_COMPUESTOS.has(limpiarPalabraSignos(palabrasTit[idxInicio])) && PREFIJOS_COMPUESTOS.has(limpiarPalabraSignos(palabrasTit[idxInicio - 1]))) {
     idxInicio--;
   }
 
-  // 2. Si empieza en un conector suelto ("DE", "EN", "Y", "A"), avanza al núcleo
   while (idxInicio < idxFin && ['DE', 'DEL', 'Y', 'E', 'O', 'U', 'A', 'AL', 'CON', 'POR', 'EN', 'PARA'].includes(limpiarPalabraSignos(palabrasTit[idxInicio]))) {
     idxInicio++;
   }
 
-  // 3. Si termina en un conector O en la primera mitad de un nombre compuesto (ej. "RÍO", "CALETA", "PUERTO", "RUTA"), extiende hasta completar el nombre
   let huboCambio = true;
   while (huboCambio && idxFin < palabrasTit.length - 1) {
     huboCambio = false;
@@ -314,7 +324,6 @@ function asegurarDestacadoEnTitulo(titulo, destacar) {
     }
   }
 
-  // 4. Si al unir el nombre compuesto el bloque quedó demasiado largo (5 o más palabras, ej: "PRONÓSTICO DE LLUVIA EN RÍO GALLEGOS"), recorta el inicio genérico para destacar limpio el núcleo final ("RÍO GALLEGOS")
   if (idxFin - idxInicio + 1 >= 5) {
     for (let k = idxInicio + 1; k < idxFin; k++) {
       if (['EN', 'DE', 'DEL', 'A', 'AL', 'PARA', 'POR', 'CONTRA', 'SOBRE'].includes(limpiarPalabraSignos(palabrasTit[k]))) {
@@ -327,7 +336,6 @@ function asegurarDestacadoEnTitulo(titulo, destacar) {
     }
   }
 
-  // 5. Limpieza final si quedó algún conector colgado en el extremo derecho
   while (idxFin > idxInicio && CONECTORES_COLGADOS.has(limpiarPalabraSignos(palabrasTit[idxFin]))) {
     idxFin--;
   }
@@ -406,27 +414,28 @@ async function llamarGroqChat(messages) {
   }
 }
 
-// AUDITOR VISUAL CON IA: Rechaza caras deformes, videojuegos, memes, logos o imágenes irrelevantes
-async function auditarFotoConVisionIA(dataUrl, titulo, bajada, metaDescripcionFoto = '') {
+// AUDITOR VISUAL ESTRICTO: Rechaza paisajes vacíos en notas políticas, caras deformes por IA, videojuegos o logos
+async function auditarFotoConVisionIA(dataUrl, titulo, bajada, categoria = '', metaDescripcionFoto = '') {
   const claves = obtenerListaClavesGroq();
   const apiKey = claves[(indiceClaveGroq++) % claves.length];
 
-  const promptVision = `Sos el Auditor Fotográfico de 'El Registro Sur'. Mirá esta imagen y evaluá si es apta para ilustrar esta noticia:
+  const promptVision = `Sos el Auditor Fotográfico Jefe de 'El Registro Sur'. Mirá esta imagen y evaluá si es apta para ilustrar esta noticia:
+SECCIÓN: "${categoria}"
 TITULAR: "${titulo}"
 BAJADA: "${bajada}"
-DATO DE ORIGEN DE LA FOTO: "${metaDescripcionFoto}"
+ORIGEN DE LA FOTO: "${metaDescripcionFoto}"
 
-REGLAS DE RECHAZO INMEDIATO ("aprobada": false):
-1. RECHAZAR si es una imagen generada por IA con personas o caras deformadas, borrosas o irreales.
-2. RECHAZAR si es una captura de un videojuego (Halo, soldados, autos de ficción), dibujo animado, meme, caricatura o render 3D.
-3. RECHAZAR si es un logo genérico de un diario, un cartel lleno de texto o una imagen rota.
-4. APROBAR ("aprobada": true) únicamente si es una fotografía periodística real, nítida y coherente con el protagonista o el lugar del hecho.
+REGLAS DE RECHAZO ESTRICTO ("aprobada": false):
+1. RECHAZAR SI ES UN PAISAJE DE MONTAÑAS, RUTA VACÍA O NATURALEZA cuando la noticia trata sobre políticos, empresarios, economía, reuniones, sesiones o judiciales (ej: si habla de Vidal, Pavanello, Milei, salarios o leyes y la foto muestra montañas o una ruta vacía, RECHAZARLA SIEMPRE).
+2. RECHAZAR si es una imagen generada por IA con personas o caras deformadas, o una captura de videojuego (Halo, soldados, ficción), meme o caricatura.
+3. RECHAZAR si es el logo genérico de un diario, un banner publicitario o tiene texto gigante encima.
+4. APROBAR ("aprobada": true) únicamente si es una fotografía periodística real y coherente que muestra al protagonista, institución, edificio oficial o escena real del hecho.
 
 Devolvé SOLO este JSON:
 {
   "aprobada": true o false,
   "motivo": "Explicación breve",
-  "busqueda_corregida": "Nombre físico real del protagonista o ciudad (ej: Rio Gallegos Santa Cruz costanera)"
+  "busqueda_corregida": "Nombre de la persona pública más conocida de la nota o institución (ej: Claudio Vidal Gobernador Santa Cruz)"
 }`;
 
   try {
@@ -458,7 +467,7 @@ Devolvé SOLO este JSON:
     if (metaDescripcionFoto) {
       return await llamarGroqChat([{
         role: 'user',
-        content: `Sos el Auditor Fotográfico de un diario. Evaluá si una imagen de internet con este origen ("${metaDescripcionFoto}") es una foto periodística real y coherente para la noticia "${titulo} - ${bajada}". Rechazá si parece de un videojuego, meme, ficción o tema ajeno. Devolvé JSON: {"aprobada": true o false, "busqueda_corregida": "consulta mejorada"}`
+        content: `Sos el Auditor Fotográfico de un diario. Evaluá si una imagen con esta descripción ("${metaDescripcionFoto}") sirve para la noticia "${categoria}: ${titulo} - ${bajada}". Rechazá si es un paisaje sin relación, videojuego, meme o tema ajeno. Devolvé JSON: {"aprobada": true o false, "busqueda_corregida": "consulta mejorada con el protagonista principal"}`
       }]);
     }
     return { aprobada: true };
@@ -550,12 +559,54 @@ async function transcribirAudioConGroq(audioUrl) {
   return (data.text || '').slice(0, 1800);
 }
 
-async function extraerNoticiaDeLink(url) {
+// Si un artículo viene desde Google News RSS, busca la URL original del diario para poder extraer su og:image y su cuerpo real
+async function resolverUrlOriginalDesdeBuscador(titulo, medio = '') {
   try {
-    if (!url || url.includes('news.google.com')) {
-      return { fotoExtraida: '', fuenteDominio: '', textoExtraido: '', fechaPublicacion: '' };
+    const tituloLimpio = String(titulo || '').replace(/\s+-\s+[^-]+$/, '').trim();
+    if (tituloLimpio.length < 10) return '';
+
+    const query = `${tituloLimpio} ${medio}`.trim();
+    const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const resp = await fetch(ddgUrl, {
+      signal: AbortSignal.timeout(4500),
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    if (resp.ok) {
+      const html = await resp.text();
+      const uddgMatch = html.match(/uddg=(https?%3A%2F%2F[^&"']+)/i);
+      if (uddgMatch) {
+        const decoded = decodeURIComponent(uddgMatch[1]);
+        if (!decoded.includes('google.com') && !decoded.includes('duckduckgo.com')) return decoded;
+      }
     }
-    const resp = await fetch(url, {
+
+    const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+    const respBing = await fetch(bingUrl, {
+      signal: AbortSignal.timeout(4500),
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    if (respBing.ok) {
+      const htmlB = await respBing.text();
+      const linkMatch = htmlB.match(/<li class="b_algo"[\s\S]*?<a[^>]+href="(https?:\/\/(?!www\.bing\.com|news\.google\.com)[^"]+)"/i);
+      if (linkMatch) return linkMatch[1];
+    }
+  } catch (e) {}
+  return '';
+}
+
+async function extraerNoticiaDeLink(url, tituloParaResolver = '', medioParaResolver = '') {
+  try {
+    let urlFinal = url || '';
+    if ((!urlFinal || urlFinal.includes('news.google.com')) && tituloParaResolver) {
+      const resuelta = await resolverUrlOriginalDesdeBuscador(tituloParaResolver, medioParaResolver);
+      if (resuelta) urlFinal = resuelta;
+    }
+
+    if (!urlFinal || urlFinal.includes('news.google.com')) {
+      return { fotoExtraida: '', fuenteDominio: '', textoExtraido: '', parrafosReales: '', fechaPublicacion: '' };
+    }
+
+    const resp = await fetch(urlFinal, {
       redirect: 'follow',
       signal: AbortSignal.timeout(6500),
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
@@ -593,11 +644,11 @@ async function extraerNoticiaDeLink(url) {
 
     let fotoUrl = ogImageMatch ? ogImageMatch[1] : '';
     if (fotoUrl && fotoUrl.startsWith('/')) {
-      const origin = new URL(url).origin;
+      const origin = new URL(urlFinal).origin;
       fotoUrl = `${origin}${fotoUrl}`;
     }
 
-    const dominio = new URL(url).hostname.replace('www.', '').split('.')[0].toUpperCase();
+    const dominio = new URL(urlFinal).hostname.replace('www.', '').split('.')[0].toUpperCase();
     const tituloLimpio = (ogTitleMatch ? ogTitleMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 220);
     const bajadaMeta = (ogDescMatch ? ogDescMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 350);
 
@@ -605,10 +656,11 @@ async function extraerNoticiaDeLink(url) {
       fotoExtraida: fotoUrl,
       fuenteDominio: dominio,
       fechaPublicacion: fechaMatch ? fechaMatch[1] : '',
+      parrafosReales: `${bajadaMeta} ${parrafos}`.trim(),
       textoExtraido: `TÍTULO ORIGINAL: ${tituloLimpio}\nBAJADA: ${bajadaMeta}\nCUERPO COMPLETO:\n${parrafos}`.slice(0, 2600)
     };
   } catch (e) {
-    return { fotoExtraida: '', fuenteDominio: '', textoExtraido: '', fechaPublicacion: '' };
+    return { fotoExtraida: '', fuenteDominio: '', textoExtraido: '', parrafosReales: '', fechaPublicacion: '' };
   }
 }
 
@@ -713,7 +765,6 @@ async function obtenerTodasLasCandidatasRadar() {
   return listas.flat();
 }
 
-// Filtra notas basura de clima/quiniela automatizada de Clarín/La Nación y prioriza noticias reales y frescas
 function ordenarCandidatasRelevantes(candidatas, ignorarHistorial = false) {
   if (!candidatas || candidatas.length === 0) return [];
 
@@ -735,7 +786,10 @@ function ordenarCandidatasRelevantes(candidatas, ignorarHistorial = false) {
     if (c.categoriaOrigen === 'regional') puntos += 30;
     if (regexImpactoNacional.test(c.titulo)) puntos += 35;
     if (c.categoriaOrigen === 'espectaculos') puntos += regexBombasEspectaculos.test(c.titulo) ? 32 : -5;
-    if (c.fotoRss && !c.link.includes('news.google.com')) puntos += 18;
+
+    // Premia fuertemente los portales con link directo y foto real para no depender de Google News
+    if (!c.link.includes('news.google.com')) puntos += 25;
+    if (c.fotoRss) puntos += 20;
 
     if (c.antiguedadMinutos <= 45) puntos += 40;
     else if (c.antiguedadMinutos <= 120) puntos += 25;
@@ -774,10 +828,9 @@ function optimizarFotoConCloudinary(fotoUrl, expandir = false, alto = 1080) {
   return `https://res.cloudinary.com/${cloudName}/image/fetch/c_fill,g_auto:faces,w_1440,h_${hFinal},e_improve,e_sharpen:80,f_jpg,q_92/${encodeURIComponent(fotoUrl)}`;
 }
 
-// Respaldo IA con prohibición estricta de personas/caras para que jamás dibuje rostros deformes
 function construirUrlPollinationsHD(prompt) {
   const seed = Math.floor(Math.random() * 999999);
-  const promptSeguroSinCaras = `${prompt}, wide angle outdoor landscape or architectural exterior photojournalism, NO HUMANS, NO PEOPLE, NO FACES, NO TEXT, photorealistic DSLR`;
+  const promptSeguroSinCaras = `${prompt}, wide angle architectural or urban photojournalism exterior, NO HUMANS, NO PEOPLE, NO FACES, NO TEXT, photorealistic DSLR`;
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(promptSeguroSinCaras)}?width=1080&height=1080&nologo=true&seed=${seed}`;
 }
 
@@ -817,7 +870,6 @@ async function descargarYValidarImagen(url, timeoutMs = 5500, metaDesc = '') {
   }
 }
 
-// Nivel 1 de búsqueda infalible: Bing News RSS oficial (devuelve fotos reales de diarios argentinos sin bloqueos de IP)
 async function buscarFotoEnBingNewsRss(consulta) {
   try {
     const q = consulta.replace(/orcolandia|kukardo|mandril|casta/gi, '').trim();
@@ -849,7 +901,6 @@ async function buscarFotoEnBingNewsRss(consulta) {
   }
 }
 
-// Nivel 2 de búsqueda infalible: API oficial de Wikipedia en Español (fotos reales HD de ciudades, rutas y figuras)
 async function buscarFotoEnWikipedia(consulta) {
   try {
     const apiWiki = `https://es.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(consulta)}&gsrlimit=3&prop=pageimages&piprop=original&format=json`;
@@ -863,7 +914,7 @@ async function buscarFotoEnWikipedia(consulta) {
     const candidatas = [];
     for (const p of pages) {
       const orig = p?.original?.source;
-      if (orig && /\.(?:jpg|jpeg|png|webp)$/i.test(orig) && !/coat_of_arms|escudo|flag|bandera|map|mapa|locator/i.test(orig)) {
+      if (orig && /\.(?:jpg|jpeg|png|webp)$/i.test(orig) && !/coat_of_arms|escudo|flag|bandera|map|mapa|locator|signature|firma/i.test(orig)) {
         candidatas.push({ url: orig, desc: `Wikipedia: ${p.title}` });
       }
     }
@@ -873,11 +924,11 @@ async function buscarFotoEnWikipedia(consulta) {
   }
 }
 
+// Extractor reparado de Bing Imágenes (soporta comillas escapadas &quot; y literales ") + Bing News + Wikipedia
 async function obtenerCandidatasFotoWeb(consulta) {
   if (!consulta || consulta.trim().length < 3) return [];
   const consultaLimpia = consulta.replace(/orcolandia|kukardo|mandril|casta/gi, '').trim();
 
-  // Consulta en paralelo Bing News RSS + Wikipedia API + Bing Web Images
   const [desdeBingNews, desdeWiki] = await Promise.all([
     buscarFotoEnBingNewsRss(consultaLimpia),
     buscarFotoEnWikipedia(consultaLimpia)
@@ -885,80 +936,85 @@ async function obtenerCandidatasFotoWeb(consulta) {
 
   const itemsEncontrados = [...desdeBingNews, ...desdeWiki];
 
-  if (itemsEncontrados.length < 3) {
-    try {
-      const bingUrl = `https://www.bing.com/images/async?q=${encodeURIComponent(consultaLimpia + ' prensa Argentina foto')}&first=0&count=8&mmasync=1`;
-      const resp = await fetch(bingUrl, {
-        signal: AbortSignal.timeout(4000),
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-      });
-      const html = await resp.text();
-      const bloques = [...html.matchAll(/m=\{"[^"]+"[\s\S]*?\}/gi)].map(m => m[0]);
+  try {
+    const bingUrl = `https://www.bing.com/images/async?q=${encodeURIComponent(consultaLimpia + ' Argentina prensa')}&first=0&count=12&mmasync=1`;
+    const resp = await fetch(bingUrl, {
+      signal: AbortSignal.timeout(4500),
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    const html = await resp.text();
 
-      for (const b of bloques) {
-        const murl = b.match(/murl&quot;:&quot;(https?:\/\/[^&"]+)&quot;/i)?.[1];
-        const t = b.match(/t&quot;:&quot;([^&"]+)&quot;/i)?.[1] || '';
-        if (murl && /\.(?:jpg|jpeg|png|webp)(?:\?|$)/i.test(murl) && !DOMINIOS_PROHIBIDOS_IMG.test(murl) && !DOMINIOS_PROHIBIDOS_IMG.test(t)) {
-          itemsEncontrados.push({ url: murl, desc: `${t} (${murl})` });
-        }
+    // Regex reparado: captura murl&quot;:&quot;https://...&quot; directamente en el HTML de Bing
+    const matches = [
+      ...html.matchAll(/murl&quot;:&quot;(https?:\/\/[^&"]+)&quot;[\s\S]{0,300}?t&quot;:&quot;([^&"]*)&quot;/gi),
+      ...html.matchAll(/murl&quot;:&quot;(https?:\/\/[^&"]+)&quot;/gi)
+    ];
+
+    const vistos = new Set();
+    for (const m of matches) {
+      const murl = m[1];
+      const tituloImg = m[2] || consultaLimpia;
+      if (murl && !vistos.has(murl) && /\.(?:jpg|jpeg|png|webp)(?:\?|$)/i.test(murl) && !DOMINIOS_PROHIBIDOS_IMG.test(murl) && !DOMINIOS_PROHIBIDOS_IMG.test(tituloImg)) {
+        vistos.add(murl);
+        itemsEncontrados.push({ url: murl, desc: `${tituloImg} (${murl})` });
       }
-    } catch (e) {}
-  }
+    }
+  } catch (e) {}
 
-  const descargadas = await Promise.all(itemsEncontrados.slice(0, 5).map(it => descargarYValidarImagen(it.url, 4500, it.desc)));
+  const descargadas = await Promise.all(itemsEncontrados.slice(0, 6).map(it => descargarYValidarImagen(it.url, 4500, it.desc)));
   return descargadas.filter(Boolean);
 }
 
+// Búsqueda escalonada en 3 niveles (1. Específica -> 2. Figura/Entidad principal -> 3. Institución/Lugar) auditada por IA
 async function auditarYResolverImagen({
   fotoCandidataUrl,
   esFotoManualDelEditor,
   titulo,
   bajada,
-  busquedaWebSugerida,
+  categoria = '',
+  busquedasSugeridas = [],
   promptIaSugerido,
   forzarBusquedaNueva = false
 }) {
   if (fotoCandidataUrl && esFotoManualDelEditor && !forzarBusquedaNueva) {
     const validadaEditor = await descargarYValidarImagen(fotoCandidataUrl, 6000, 'Foto enviada por el Editor');
-    if (validadaEditor) return { urlFinal: validadaEditor.dataUrl, urlOriginal: validadaEditor.url, fuenteAuto: 'GENTILEZA / ARCHIVO' };
+    if (validadaEditor) return { urlFinal: validadaEditor.dataUrl, urlOriginal: validadaEditor.url, fuenteAuto: 'GENTILEZA / ARCHIVO', esFotoRealVerificada: true };
   }
 
   if (fotoCandidataUrl && !forzarBusquedaNueva) {
     const validada = await descargarYValidarImagen(fotoCandidataUrl, 5500, fotoCandidataUrl);
     if (validada) {
-      const auditoria = await auditarFotoConVisionIA(validada.dataUrl, titulo, bajada, validada.metaDesc);
+      const auditoria = await auditarFotoConVisionIA(validada.dataUrl, titulo, bajada, categoria, validada.metaDesc);
       if (auditoria.aprobada !== false) {
-        return { urlFinal: validada.dataUrl, urlOriginal: validada.url, fuenteAuto: '' };
+        return { urlFinal: validada.dataUrl, urlOriginal: validada.url, fuenteAuto: '', esFotoRealVerificada: true };
       }
-      if (auditoria.busqueda_corregida) busquedaWebSugerida = auditoria.busqueda_corregida;
+      if (auditoria.busqueda_corregida) busquedasSugeridas.unshift(auditoria.busqueda_corregida);
     }
   }
 
-  const queryWeb = busquedaWebSugerida || titulo;
-  const candidatasWeb = await obtenerCandidatasFotoWeb(queryWeb);
+  const colaConsultas = [...new Set([...busquedasSugeridas.filter(Boolean), titulo])].slice(0, 3);
 
-  for (const cand of candidatasWeb) {
-    const veredicto = await auditarFotoConVisionIA(cand.dataUrl, titulo, bajada, cand.metaDesc);
-    if (veredicto.aprobada !== false) {
-      return { urlFinal: cand.dataUrl, urlOriginal: cand.url, fuenteAuto: 'ARCHIVO / PRENSA' };
+  for (const queryWeb of colaConsultas) {
+    const candidatasWeb = await obtenerCandidatasFotoWeb(queryWeb);
+    for (const cand of candidatasWeb) {
+      const veredicto = await auditarFotoConVisionIA(cand.dataUrl, titulo, bajada, categoria, cand.metaDesc);
+      if (veredicto.aprobada !== false) {
+        return { urlFinal: cand.dataUrl, urlOriginal: cand.url, fuenteAuto: 'ARCHIVO / PRENSA', esFotoRealVerificada: true };
+      }
     }
   }
 
-  if (candidatasWeb[0]) {
-    return { urlFinal: candidatasWeb[0].dataUrl, urlOriginal: candidatasWeb[0].url, fuenteAuto: 'ARCHIVO / PRENSA' };
-  }
-
-  const urlIa = construirUrlPollinationsHD(promptIaSugerido || 'Patagonia Argentina highway coastal city landscape');
-  const validadaIa = await descargarYValidarImagen(urlIa, 9000, 'Ilustración paisaje sin personas');
+  const urlIa = construirUrlPollinationsHD(promptIaSugerido || 'Government building exterior Argentina photojournalism');
+  const validadaIa = await descargarYValidarImagen(urlIa, 9000, 'Ilustración institucional');
   if (validadaIa) {
-    return { urlFinal: validadaIa.dataUrl, urlOriginal: urlIa, fuenteAuto: 'ILUSTRACIÓN' };
+    return { urlFinal: validadaIa.dataUrl, urlOriginal: urlIa, fuenteAuto: 'ILUSTRACIÓN', esFotoRealVerificada: false };
   }
 
-  return { urlFinal: urlIa, urlOriginal: urlIa, fuenteAuto: 'ARCHIVO' };
+  return { urlFinal: urlIa, urlOriginal: urlIa, fuenteAuto: 'ARCHIVO', esFotoRealVerificada: false };
 }
 
 // ============================================================================
-// CEREBRO EDITORIAL + VERIFICACIÓN ESTRICTA (FACT-CHECK 2B + ENRIQUECIMIENTO 4A)
+// CEREBRO EDITORIAL + BÚSQUEDA FOTOGRÁFICA ESCALONADA EN 3 NIVELES
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
@@ -966,16 +1022,16 @@ async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = fa
   const contextoRecortado = String(contextoWeb || '').slice(0, 850);
 
   const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), medio periodístico digital con sede en Caleta Olivia, Santa Cruz, que cubre noticias locales, provinciales y nacionales de Argentina.
-IDIOMA: Castellano de Argentina 100% natural, fluido y periodístico.
+IDIOMA: Castellano de Argentina 100% natural, fluido y sin errores ortográficos (escribí siempre "elogió", jamás "elogó").
 
-REGLA DE ORO DE VERIFICACIÓN Y GEOGRAFÍA (FACT-CHECK 2B Y PROHIBIDO INVENTAR LUGARES):
-- VERIFICACIÓN ESTRICTA: Contrastá los datos con el contexto de medios recibido. Usá ÚNICAMENTE los hechos, lugares, fechas, nombres y cifras confirmados. Eliminá cualquier dato secundario no verificado.
-- DESCARTE SILENCIOSO ("descartar": true): Si el texto recibido es un rumor falso que contradice las fuentes oficiales o carece de relevancia periodística (y no es una edición manual), devolvé "descartar": true. Si es una noticia real de un portal o un parte climático, devolvé "descartar": false.
-- PROHIBIDO INVENTAR QUE ALGO FUE EN CALETA OLIVIA: Si una noticia ocurre en Buenos Aires, en Río Gallegos, en el Congreso o es un evento nacional, JAMÁS digas que ocurrió en Caleta Olivia ni pongas "CALETA OLIVIA" en la categoría. Mencioná a Caleta Olivia ÚNICAMENTE cuando el hecho ocurra allí.
+REGLA DE ORO DE VERIFICACIÓN Y GEOGRAFÍA (FACT-CHECK 2B Y PROHIBIDO INVENTAR DATOS):
+- VERIFICACIÓN ESTRICTA: Usá ÚNICAMENTE los hechos, lugares, fechas, nombres y cifras confirmados en el texto recibido. PROHIBIDO inventar lugares de reuniones o licitaciones que no figuren en el texto.
+- DESCARTE SILENCIOSO ("descartar": true): Si el texto recibido carece de información verificable suficiente o es relleno automático, devolvé "descartar": true.
+- PROHIBIDO INVENTAR QUE ALGO FUE EN CALETA OLIVIA: Mencioná a Caleta Olivia ÚNICAMENTE cuando el hecho ocurra allí.
 
 REGLA 1 — PALABRAS DESTACADAS EN EL TÍTULO ("destacar"):
 - Debe ser una FRASE COMPLETA CON SENTIDO PROPIO Y AUTÓNOMO de 2 a 4 palabras consecutivas exactas dentro de "titulo".
-- PROHIBIDO CORTAR NOMBRES PROPIOS O LUGARES COMPUESTOS AL MEDIO: Si destacás una ciudad o entidad compuesta, incluí SIEMPRE el nombre completo (ejemplo: "RÍO GALLEGOS", "CALETA OLIVIA", "PICO TRUNCADO", "SANTA CRUZ", "BUENOS AIRES", "RUTA NACIONAL 3", "BUQUE DE LA ARMADA"). Jamás destaques "LLUVIA EN RÍO" dejando "GALLEGOS" afuera.
+- PROHIBIDO CORTAR NOMBRES PROPIOS O LUGARES COMPUESTOS AL MEDIO (ej: "RÍO GALLEGOS", "CALETA OLIVIA", "POLÍTICAS DE VIDAL", "SANTA CRUZ", "RUTA NACIONAL 3").
 
 REGLA 2 — SUBTÍTULO DE LA PLACA ("bajada"): COHERENCIA Y ESTÉTICA DE 3 A 4 RENGLONES:
 - Redactá un subtítulo periodístico coherente, fluido y natural con todos sus artículos (de 20 a 32 palabras) que forme 3 renglones ideales o hasta 4 renglones bien cerrados.
@@ -987,12 +1043,14 @@ Redactá una NOTA PERIODÍSTICA COMPLETA Y DESGLOSADA POR PUNTOS en texto plano 
 3. 3 A 4 PÁRRAFOS TEMÁTICOS CON SUBTÍTULO EN LÍNEA ("Subtema clave: Desarrollo..."): Desglosá cada punto, antecedente o cifra con un subtítulo corto seguido de dos puntos al inicio del párrafo. Prohibido usar viñetas, guiones o asteriscos.
 4. PÁRRAFO DE CIERRE INFORMATIVO: Cómo sigue el tema o qué impacto real tiene.
 5. FIRMA EDITORIAL: "Toda la cobertura en @elregistrosur."
-6. PREGUNTA DE DEBATE O CIERRE DINÁMICO + 👇: "¿...? Te leemos en comentarios 👇" (o llamado a compartir en alertas viales/clima 👇).
+6. PREGUNTA DE DEBATE O CIERRE DINÁMICO + 👇: "¿...? Te leemos en comentarios 👇".
 7. BLOQUE DE 8 A 10 HASHTAGS EN MINÚSCULAS.
 
-REGLA 4 — BÚSQUEDA DE FOTO REAL ("busqueda_foto_web" y "prompt_imagen_ia"):
-- En "busqueda_foto_web": Escribí el NOMBRE REAL del protagonista, institución o ciudad + el lugar físico (ej: "Javier Milei discurso empresarios", "Rio Gallegos Santa Cruz ciudad", "Puerto Caleta Paula buque"). Prohibido usar metáforas o apodos.
-- En "prompt_imagen_ia": Describí ÚNICAMENTE el escenario exterior, edificio, ruta o paisaje en inglés, SIN PERSONAS NI CARAS ("wide angle exterior view of..., no people, no faces, photojournalism").
+REGLA 4 — BÚSQUEDA FOTOGRÁFICA ESCALONADA EN 3 NIVELES (CLAVE PARA ENCONTRAR FOTOS REALES SIEMPRE):
+- Si la nota menciona a alguien poco conocido junto a una figura famosa (ej: "Pavanello destaca políticas de Vidal"), los buscadores no conocen al menos famoso. Por eso debés entregar 3 búsquedas de lo específico a lo más conocido:
+  * "busqueda_foto_web": La figura pública o protagonista principal + su cargo/provincia (ej: "Claudio Vidal gobernador Santa Cruz").
+  * "busqueda_foto_respaldo": SOLO el nombre de la persona más famosa o la institución/empresa más conocida de la nota (ej: "Claudio Vidal" o "YPF Santa Cruz" o "Javier Milei").
+  * "busqueda_foto_institucional": El edificio oficial o lugar físico real del tema (ej: "Casa de Gobierno Rio Gallegos Santa Cruz" o "Congreso de la Nacion Argentina").
 
 LISTA BLANCA DE EMOJIS PERMITIDOS EN "copy":
 🚨 🔴 🟠 🟡 🚧 🚔 🚒 🚑 🛑 💨 🌀 🌊 💧 ☔ ⛄ ⛅ ⚡ 🔥 💰 💵 📈 📉 📊 ⛽ 🏭 🚜 🚛 🚢 🐟 📢 📣 📰 📋 📄 📜 🏥 🏫 🎓 👷 🤝 📍 📅 🕒 ⚽ 🏆 🏅 🎭 🎶 👇 👉 📲 💬 ✅ ❌
@@ -1001,9 +1059,9 @@ Devolvé ÚNICAMENTE este JSON:
 {
   "descartar": false,
   "motivo_descarte": "",
-  "categoria": "SECCIÓN / SUBTEMA EN MAYÚSCULAS SIN EMOJIS (ej. NACIÓN / POLÍTICA, SANTA CRUZ / CLIMA, CALETA OLIVIA / PUERTO)",
+  "categoria": "SECCIÓN / SUBTEMA EN MAYÚSCULAS SIN EMOJIS",
   "titulo": "TITULAR EN MAYÚSCULAS SIN EMOJIS (5 a 8 palabras)",
-  "destacar": "FRASE COMPLETA CON SENTIDO PROPIO DENTRO DEL TITULO (jamás cortar nombres compuestos como RÍO GALLEGOS o CALETA OLIVIA)",
+  "destacar": "FRASE COMPLETA CON SENTIDO PROPIO DENTRO DEL TITULO",
   "bajada": "Subtítulo periodístico coherente, verificado y estético en castellano SIN EMOJIS (de 20 a 32 palabras para formar 3 a 4 renglones).",
   "dato_clave": "Cifra central si existe, o vacío",
   "autor_cita": "Nombre y cargo si hay cita, o vacío",
@@ -1014,8 +1072,10 @@ Devolvé ÚNICAMENTE este JSON:
     { "titulo": "ANTECEDENTES Y DATOS CLAVE", "destacar": "DATOS CLAVE", "bajada": "Subtítulo coherente de 20 a 30 palabras con las cifras y el contexto." },
     { "titulo": "IMPACTO Y DEFINICIONES", "destacar": "DEFINICIONES", "bajada": "Subtítulo coherente de 20 a 30 palabras sobre lo que viene." }
   ],
-  "busqueda_foto_web": "Nombre real del protagonista o ciudad + lugar físico de prensa",
-  "prompt_imagen_ia": "Wide angle exterior photojournalism prompt in English showing the real physical setting or landscape, NO PEOPLE, NO FACES, NO TEXT"
+  "busqueda_foto_web": "Figura pública principal o protagonista + cargo/lugar",
+  "busqueda_foto_respaldo": "Nombre de la persona más famosa o institución principal de la noticia",
+  "busqueda_foto_institucional": "Edificio oficial o escenario físico real del hecho",
+  "prompt_imagen_ia": "Wide angle exterior photojournalism prompt in English showing the real physical building or setting, NO PEOPLE, NO FACES, NO TEXT"
 }`;
 
   const userMessage = esEdicion
@@ -1026,7 +1086,7 @@ Devolvé ÚNICAMENTE este JSON:
         bajada: ultimoEstado.bajada,
         copy: String(ultimoEstado.copy || '').slice(0, 1400)
       })}\n\nCambio pedido: "${textoRecortado}". Devolvé JSON verificado con "descartar": false.`
-    : `Noticia recibida:\n"${textoRecortado}"\n${contextoRecortado}\nVerificá los datos y el lugar real y redactá el JSON completo sin cortar nombres compuestos en "destacar".`;
+    : `Noticia recibida:\n"${textoRecortado}"\n${contextoRecortado}\nVerificá los datos reales sin inventar reuniones ni lugares no mencionados y redactá el JSON completo.`;
 
   const parsed = await llamarGroqChat([
     { role: 'system', content: systemPrompt },
@@ -1376,13 +1436,19 @@ async function enviarFotoConBotonesTelegram(imageBuffer, prefijo, copyCompleto) 
   }
 }
 
-async function armarNoticiaDesdeCandidata(elegida) {
+async function armarNoticiaDesdeCandidata(elegida, exigirFotoReal = false) {
   registrarTemaEnviado(elegida.titulo);
 
   const [extraido, contextoObj] = await Promise.all([
-    extraerNoticiaDeLink(elegida.link),
+    extraerNoticiaDeLink(elegida.link, elegida.titulo, elegida.medio),
     buscarContextoEnGoogleNews(elegida.titulo)
   ]);
+
+  // Si en el Radar la nota no tiene cuerpo de texto real ni contexto suficiente, pasa a la siguiente para no inventar datos
+  const contenidoDisponible = `${elegida.bajadaRss || ''} ${extraido.parrafosReales || ''} ${contextoObj.texto || ''}`.trim();
+  if (exigirFotoReal && contenidoDisponible.length < 140) {
+    return null;
+  }
 
   const fechaRawFinal = elegida.fechaPub || extraido.fechaPublicacion || contextoObj.fechaReciente || '';
   const antiguedad = calcularAntiguedadNoticia(fechaRawFinal);
@@ -1393,14 +1459,24 @@ async function armarNoticiaDesdeCandidata(elegida) {
   if (noticiaIA.descartar) return null;
 
   const fotoInicial = extraido.fotoExtraida || elegida.fotoRss || '';
-  const { urlFinal, urlOriginal, fuenteAuto } = await auditarYResolverImagen({
+  const { urlFinal, urlOriginal, fuenteAuto, esFotoRealVerificada } = await auditarYResolverImagen({
     fotoCandidataUrl: fotoInicial,
     esFotoManualDelEditor: false,
     titulo: noticiaIA.titulo,
     bajada: noticiaIA.bajada,
-    busquedaWebSugerida: noticiaIA.busqueda_foto_web,
+    categoria: noticiaIA.categoria,
+    busquedasSugeridas: [
+      noticiaIA.busqueda_foto_web,
+      noticiaIA.busqueda_foto_respaldo,
+      noticiaIA.busqueda_foto_institucional
+    ],
     promptIaSugerido: noticiaIA.prompt_imagen_ia
   });
+
+  // Si es búsqueda automática del Radar y no encontró ninguna foto real coherente, pasa a otra noticia
+  if (exigirFotoReal && !esFotoRealVerificada) {
+    return null;
+  }
 
   const fuenteFinal = fuenteAuto || elegida.medio.toUpperCase() || noticiaIA.fuente_credito || 'PRENSA';
 
@@ -1455,12 +1531,13 @@ async function generarDatosRadar(forzar = false) {
 
   ultimasTopCandidatas = ordenadas.slice(0, 5);
 
-  for (const elegida of ordenadas.slice(0, 3)) {
-    const resultado = await armarNoticiaDesdeCandidata(elegida);
+  // Prueba hasta 4 candidatas exigiendo que tengan texto real y foto periodística real verificada
+  for (const elegida of ordenadas.slice(0, 4)) {
+    const resultado = await armarNoticiaDesdeCandidata(elegida, true);
     if (resultado) return resultado;
   }
 
-  return null;
+  return await armarNoticiaDesdeCandidata(ordenadas[0], false);
 }
 
 async function ejecutarAlertaRuta3YServicios() {
@@ -1475,7 +1552,7 @@ async function ejecutarAlertaRuta3YServicios() {
   registrarTemaEnviado(elegida.titulo);
 
   const [extraido, contextoObj] = await Promise.all([
-    extraerNoticiaDeLink(elegida.link),
+    extraerNoticiaDeLink(elegida.link, elegida.titulo, elegida.medio),
     buscarContextoEnGoogleNews(elegida.titulo)
   ]);
 
@@ -1488,8 +1565,9 @@ async function ejecutarAlertaRuta3YServicios() {
     esFotoManualDelEditor: false,
     titulo: noticiaIA.titulo,
     bajada: noticiaIA.bajada,
-    busquedaWebSugerida: 'Ruta Nacional 3 Caleta Olivia Santa Cruz',
-    promptIaSugerido: 'Patagonia Argentina coastal highway Ruta 3 landscape photojournalism'
+    categoria: 'ZONA NORTE / ALERTA',
+    busquedasSugeridas: ['Ruta Nacional 3 Caleta Olivia Santa Cruz', 'Caleta Olivia Santa Cruz ruta'],
+    promptIaSugerido: 'Patagonia Argentina coastal highway Ruta 3 photojournalism'
   });
 
   const imageBuffer = await renderizarFlyer({
@@ -1566,7 +1644,8 @@ Devolvé ÚNICAMENTE este JSON:
     esFotoManualDelEditor: false,
     titulo: 'Caleta Olivia Santa Cruz Patagonia',
     bajada: 'Vista panorámica de la ciudad de Caleta Olivia en la provincia de Santa Cruz.',
-    busquedaWebSugerida: 'Caleta Olivia Santa Cruz',
+    categoria: 'SANTA CRUZ / RESUMEN',
+    busquedasSugeridas: ['Caleta Olivia Santa Cruz El Gorosito', 'Caleta Olivia costanera'],
     promptIaSugerido: 'Caleta Olivia Patagonia Argentina dusk city coast landscape'
   });
 
@@ -1623,7 +1702,8 @@ async function ejecutarParteClima() {
     esFotoManualDelEditor: false,
     titulo: 'Caleta Olivia Santa Cruz Costanera',
     bajada: noticiaIA.bajada,
-    busquedaWebSugerida: 'Caleta Olivia Santa Cruz',
+    categoria: 'CALETA OLIVIA / CLIMA',
+    busquedasSugeridas: ['Caleta Olivia Santa Cruz costanera', 'Caleta Olivia El Gorosito'],
     promptIaSugerido: 'Caleta Olivia Patagonia Argentina coastal city sea sky dramatic weather landscape'
   });
 
@@ -1818,7 +1898,7 @@ app.post('/generar', async (req, res) => {
         await enviarMensajeTelegram('⚠️ Ese número no está en la lista actual. Mandá .top primero.');
         return res.json({ ok: true, descartado: true, imagen_base64: '' });
       }
-      const armada = await armarNoticiaDesdeCandidata(elegida);
+      const armada = await armarNoticiaDesdeCandidata(elegida, false);
       if (!armada) {
         await enviarMensajeTelegram('⚠️ La noticia elegida no pasó la verificación de datos.');
         return res.json({ ok: true, descartado: true, imagen_base64: '' });
@@ -2028,7 +2108,8 @@ app.post('/generar', async (req, res) => {
         esFotoManualDelEditor: false,
         titulo: ultimoEstado.titulo,
         bajada: ultimoEstado.bajada,
-        busquedaWebSugerida: ultimoEstado.titulo,
+        categoria: ultimoEstado.categoria,
+        busquedasSugeridas: [ultimoEstado.titulo, ultimoEstado.destacar],
         promptIaSugerido: ultimoEstado.prompt_imagen_ia,
         forzarBusquedaNueva: true
       });
@@ -2237,7 +2318,7 @@ app.post('/generar', async (req, res) => {
     let fuenteLink = '';
 
     const [extraidoLink, contextoObj] = await Promise.all([
-      urlDetectada ? extraerNoticiaDeLink(urlDetectada) : Promise.resolve({ fotoExtraida: '', fuenteDominio: '', textoExtraido: '', fechaPublicacion: '' }),
+      urlDetectada ? extraerNoticiaDeLink(urlDetectada, textoParaProcesar) : Promise.resolve({ fotoExtraida: '', fuenteDominio: '', textoExtraido: '', fechaPublicacion: '' }),
       buscarContextoEnGoogleNews(textoParaProcesar)
     ]);
 
@@ -2255,7 +2336,7 @@ app.post('/generar', async (req, res) => {
     const esUrgente = comando === 'urgente' || comando === 'comandourgente' || (esEdicion && ultimoEstado.urgente);
 
     let promptImagenIA = ultimoEstado.prompt_imagen_ia;
-    let busquedaFotoWeb = '';
+    let busquedasSugeridas = [];
     let datoClave = ultimoEstado.dato_clave;
     let autorCita = ultimoEstado.autor_cita;
     let fuenteCredito = fuenteLink || ultimoEstado.fuente_credito;
@@ -2282,7 +2363,11 @@ app.post('/generar', async (req, res) => {
       autorCita = noticiaIA.autor_cita || '';
       fuenteCredito = fuenteLink || noticiaIA.fuente_credito || 'ARCHIVO';
       promptImagenIA = noticiaIA.prompt_imagen_ia || 'journalism news photography Argentina';
-      busquedaFotoWeb = noticiaIA.busqueda_foto_web || titulo;
+      busquedasSugeridas = [
+        noticiaIA.busqueda_foto_web,
+        noticiaIA.busqueda_foto_respaldo,
+        noticiaIA.busqueda_foto_institucional
+      ];
     }
 
     let fotoFinalParaPlaca = esEdicion ? ultimoEstado.foto_url : '';
@@ -2294,7 +2379,8 @@ app.post('/generar', async (req, res) => {
         esFotoManualDelEditor: Boolean(nuevaFotoTelegram),
         titulo,
         bajada,
-        busquedaWebSugerida: busquedaFotoWeb,
+        categoria,
+        busquedasSugeridas,
         promptIaSugerido: promptImagenIA
       });
       fotoFinalParaPlaca = resultadoAuditoria.urlFinal;
@@ -2398,4 +2484,4 @@ app.get('/ultimo-borrador', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`El Registro Sur 2K + Blindaje Total listo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`El Registro Sur 2K + Blindaje Fotográfico listo en puerto ${PORT}`));
