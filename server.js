@@ -89,7 +89,7 @@ const EMOJIS_SEGUROS_META = new Set([
 
 function limpiarEmojis(texto) {
   if (!texto) return '';
-  return texto
+  return String(texto)
     .replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, '')
     .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\u200D]/gu, '')
     .replace(/\b(fortes)\b/gi, 'fuertes')
@@ -100,7 +100,7 @@ function limpiarEmojis(texto) {
 
 function filtrarEmojisSegurosRedes(texto) {
   if (!texto) return '';
-  let limpio = texto
+  let limpio = String(texto)
     .replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, '')
     .replace(/[\uFE0F\u200D]/g, '');
 
@@ -116,7 +116,7 @@ function filtrarEmojisSegurosRedes(texto) {
     .trim();
 }
 
-// Llamada única a openai/gpt-oss-120b con espera inteligente si hay límite 429
+// Llamada única a openai/gpt-oss-120b con espera inteligente ante límite 429
 async function llamarGroqChat(messages) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('Falta configurar GROQ_API_KEY en Render.');
@@ -124,7 +124,7 @@ async function llamarGroqChat(messages) {
   for (let intento = 1; intento <= 3; intento++) {
     const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(14000),
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`
@@ -139,7 +139,7 @@ async function llamarGroqChat(messages) {
 
     if (resp.status === 429 && intento < 3) {
       const retryHeader = parseInt(resp.headers.get('retry-after') || '0', 10);
-      const esperaMs = retryHeader > 0 ? Math.min(retryHeader * 1000, 7000) : intento * 3500;
+      const esperaMs = retryHeader > 0 ? Math.min(retryHeader * 1000, 5000) : intento * 2500;
       console.warn(`Cupo Groq 429 alcanzado. Esperando ${esperaMs}ms (intento ${intento}/3)...`);
       await new Promise(r => setTimeout(r, esperaMs));
       continue;
@@ -150,7 +150,9 @@ async function llamarGroqChat(messages) {
     }
 
     const data = await resp.json();
-    return JSON.parse(data?.choices?.[0]?.message?.content);
+    const rawContent = data?.choices?.[0]?.message?.content || '{}';
+    const jsonLimpio = rawContent.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+    return JSON.parse(jsonLimpio);
   }
 }
 
@@ -253,7 +255,7 @@ async function extraerNoticiaDeLink(url) {
   try {
     const resp = await fetch(url, {
       redirect: 'follow',
-      signal: AbortSignal.timeout(9000),
+      signal: AbortSignal.timeout(6500),
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
     const html = await resp.text();
@@ -294,7 +296,7 @@ async function buscarContextoEnGoogleNews(consulta) {
     if (queryLimpia.length < 5) return '';
 
     const url = `https://news.google.com/rss/search?q=${encodeURIComponent(queryLimpia)}&hl=es-419&gl=AR&ceid=AR:es-419`;
-    const resp = await fetch(url, { signal: AbortSignal.timeout(7000) });
+    const resp = await fetch(url, { signal: AbortSignal.timeout(4500) });
     const xml = await resp.text();
 
     const items = [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<pubDate>([\s\S]*?)<\/pubDate>[\s\S]*?<\/item>/gi)]
@@ -317,7 +319,7 @@ async function consultarRssGooglePorSitios(dominios, ventanaTiempo = '4h', categ
     const filtroSitios = dominios.map(d => `site:${d}`).join(' OR ');
     const query = `(${filtroSitios}) when:${ventanaTiempo}`;
     const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=es-419&gl=AR&ceid=AR:es-419`;
-    const resp = await fetch(url, { signal: AbortSignal.timeout(9000) });
+    const resp = await fetch(url, { signal: AbortSignal.timeout(6500) });
     const xml = await resp.text();
 
     return [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<link>([\s\S]*?)<\/link>[\s\S]*?<source[^>]*>([\s\S]*?)<\/source>[\s\S]*?<\/item>/gi)]
@@ -335,7 +337,7 @@ async function consultarRssGooglePorSitios(dominios, ventanaTiempo = '4h', categ
 function seleccionarNoticiaRelevante(candidatas) {
   if (!candidatas || candidatas.length === 0) return null;
 
-  const regexDescartar = /hor[óo]scopo|quiniela|loter[íi]a|crucigrama|efem[ée]rides|receta| tarot |predicciones/i;
+  const regexDescartar = /hor[óo]scopo|quiniela|loter[íi]a|crucigrama|efem[ée]rides|receta|tarot|predicciones/i;
   const regexPrioridadMaxima = /caleta olivia|santa cruz|claudio vidal|ruta 3|ruta nacional 3|ram[óo]n santos|zona norte|pico truncado|las heras|r[íi]o gallegos|ypf|petr[óo]leo|servicios p[úu]blicos|distrigas|acueducto/i;
   const regexImpactoNacional = /milei|d[óo]lar|inflaci[óo]n|anses|jubilados|combustible|nafta|sueldo|paro|corte|tarifa|impuesto|banco central|selecci[óo]n argentina|boca|river|messi|colapinto/i;
   const regexBombasEspectaculos = /wanda|icardi|china su[áa]rez|tinelli|susana|mirtha|gran hermano|lam|esc[áa]ndalo|separaci[óo]n|denuncia|luck ra|tiago pzk|la joaqui|duki|mar[íi]a becerra|l-gante|occhiato|granados/i;
@@ -360,7 +362,7 @@ function seleccionarNoticiaRelevante(candidatas) {
 
 async function obtenerDatosClimaCaleta() {
   const url = 'https://api.open-meteo.com/v1/forecast?latitude=-46.4393&longitude=-67.5284&current=temperature_2m,wind_speed_10m,wind_gusts_10m&daily=temperature_2m_max,temperature_2m_min,wind_gusts_10m_max&timezone=America%2FArgentina%2FRio_Gallegos';
-  const resp = await fetch(url);
+  const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
   const data = await resp.json();
 
   const tempActual = Math.round(data.current?.temperature_2m ?? 15);
@@ -388,7 +390,7 @@ function optimizarFotoConCloudinary(fotoUrl, expandir = false, alto = 1080) {
 
 function construirUrlPollinationsHD(prompt) {
   const seed = Math.floor(Math.random() * 999999);
-  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1440&height=1440&model=flux&enhance=true&nologo=true&seed=${seed}`;
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1280&height=1280&model=turbo&nologo=true&seed=${seed}`;
 }
 
 async function descargarYValidarImagen(url) {
@@ -399,7 +401,7 @@ async function descargarYValidarImagen(url) {
   try {
     const resp = await fetch(url, {
       redirect: 'follow',
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(4000),
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
     if (!resp.ok) return null;
@@ -420,7 +422,7 @@ async function buscarFotoRealEnWeb(consulta) {
   if (!consulta || consulta.trim().length < 3) return '';
   try {
     const initResp = await fetch(`https://duckduckgo.com/?q=${encodeURIComponent(consulta)}&iax=images&ia=images`, {
-      signal: AbortSignal.timeout(7000),
+      signal: AbortSignal.timeout(4000),
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
     const initHtml = await initResp.text();
@@ -429,7 +431,7 @@ async function buscarFotoRealEnWeb(consulta) {
     if (vqdMatch) {
       const jsonUrl = `https://duckduckgo.com/i.js?l=ar-es&o=json&q=${encodeURIComponent(consulta)}&vqd=${vqdMatch[1]}&f=,,,,,&p=1`;
       const imgResp = await fetch(jsonUrl, {
-        signal: AbortSignal.timeout(7000),
+        signal: AbortSignal.timeout(4000),
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           'Referer': 'https://duckduckgo.com/'
@@ -438,12 +440,11 @@ async function buscarFotoRealEnWeb(consulta) {
       const imgData = await imgResp.json();
       const candidatas = (imgData.results || [])
         .filter(r => (r.width || 0) >= 750 && (r.height || 0) >= 500)
-        .slice(0, 5);
+        .slice(0, 3);
 
-      for (const cand of candidatas) {
-        const validada = await descargarYValidarImagen(cand.image);
-        if (validada) return validada.url;
-      }
+      const resultados = await Promise.all(candidatas.map(c => descargarYValidarImagen(c.image)));
+      const primeraValida = resultados.find(Boolean);
+      if (primeraValida) return primeraValida.url;
     }
   } catch (e) {}
   return '';
@@ -483,7 +484,9 @@ async function auditarYResolverImagen({
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
-  const antecedentesExtra = await buscarContextoEnGoogleNews(`${textoCrudo} antecedentes obras montos`);
+  const antecedentesExtra = contextoWeb
+    ? ''
+    : await buscarContextoEnGoogleNews(`${textoCrudo} antecedentes obras montos`);
 
   const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), medio periodístico digital de Caleta Olivia, Santa Cruz ("El sur tiene registro").
 IDIOMA OBLIGATORIO: Redactá ABSOLUTAMENTE TODO EN CASTELLANO DE ARGENTINA PERFECTO Y NATURAL. Prohibido usar palabras en portugués, gallego o inglés (jamás escribas "fortes", escribí "fuertes").
@@ -568,56 +571,64 @@ async function estamparMarcaDeAguaFoto(fotoUrl, textoCredito = 'EXCLUSIVO') {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-web-security']
   });
 
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 2 });
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 2 });
 
-  const creditoLimpio = limpiarEmojis(textoCredito || 'EXCLUSIVO').toUpperCase();
+    const creditoLimpio = limpiarEmojis(textoCredito || 'EXCLUSIVO').toUpperCase();
 
-  const htmlMarca = `<!DOCTYPE html>
-  <html>
-  <head>
-    <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { width: 1080px; height: 1080px; overflow: hidden; background: #050d1a; font-family: Arial, sans-serif; }
-      #wrap { position: relative; width: 1080px; height: 1080px; }
-      #bg-blur { position: absolute; inset: -30px; width: 1140px; height: 1140px; object-fit: cover; filter: blur(26px) brightness(0.45); }
-      #main-img { position: relative; z-index: 2; width: 1080px; height: 1080px; object-fit: contain; }
-      #watermark-center {
-        position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-18deg);
-        z-index: 10; pointer-events: none;
-        color: rgba(255, 255, 255, 0.22); font-size: 54px; font-weight: 900; letter-spacing: 5px;
-        text-transform: uppercase; white-space: nowrap;
-        text-shadow: 0 2px 12px rgba(0,0,0,0.35);
-      }
-      #badge-bottom {
-        position: absolute; bottom: 32px; right: 32px; z-index: 12;
-        background: rgba(6, 15, 28, 0.84); backdrop-filter: blur(8px);
-        border: 1.5px solid rgba(56, 189, 248, 0.65); border-radius: 10px;
-        padding: 12px 22px; display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
-      }
-      #brand { color: #ffffff; font-size: 22px; font-weight: 900; letter-spacing: 1.5px; }
-      #sub { color: #38bdf8; font-size: 13px; font-weight: 700; letter-spacing: 1.2px; }
-    </style>
-  </head>
-  <body>
-    <div id="wrap">
-      <img id="bg-blur" src="${fotoUrl}" />
-      <img id="main-img" src="${fotoUrl}" />
-      <div id="watermark-center">EL REGISTRO SUR</div>
-      <div id="badge-bottom">
-        <span id="brand">EL REGISTRO SUR</span>
-        <span id="sub">${creditoLimpio} • @ELREGISTROSUR</span>
+    const htmlMarca = `<!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { width: 1080px; height: 1080px; overflow: hidden; background: #050d1a; font-family: Arial, sans-serif; }
+        #wrap { position: relative; width: 1080px; height: 1080px; }
+        #bg-blur { position: absolute; inset: -30px; width: 1140px; height: 1140px; object-fit: cover; filter: blur(26px) brightness(0.45); }
+        #main-img { position: relative; z-index: 2; width: 1080px; height: 1080px; object-fit: contain; }
+        #watermark-center {
+          position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-18deg);
+          z-index: 10; pointer-events: none;
+          color: rgba(255, 255, 255, 0.22); font-size: 54px; font-weight: 900; letter-spacing: 5px;
+          text-transform: uppercase; white-space: nowrap;
+          text-shadow: 0 2px 12px rgba(0,0,0,0.35);
+        }
+        #badge-bottom {
+          position: absolute; bottom: 32px; right: 32px; z-index: 12;
+          background: rgba(6, 15, 28, 0.84); backdrop-filter: blur(8px);
+          border: 1.5px solid rgba(56, 189, 248, 0.65); border-radius: 10px;
+          padding: 12px 22px; display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
+        }
+        #brand { color: #ffffff; font-size: 22px; font-weight: 900; letter-spacing: 1.5px; }
+        #sub { color: #38bdf8; font-size: 13px; font-weight: 700; letter-spacing: 1.2px; }
+      </style>
+    </head>
+    <body>
+      <div id="wrap">
+        <img id="bg-blur" src="${fotoUrl}" />
+        <img id="main-img" src="${fotoUrl}" />
+        <div id="watermark-center">EL REGISTRO SUR</div>
+        <div id="badge-bottom">
+          <span id="brand">EL REGISTRO SUR</span>
+          <span id="sub">${creditoLimpio} • @ELREGISTROSUR</span>
+        </div>
       </div>
-    </div>
-  </body>
-  </html>`;
+    </body>
+    </html>`;
 
-  await page.setContent(htmlMarca, { waitUntil: 'networkidle0' });
-  await new Promise(r => setTimeout(r, 700));
-  const el = await page.$('#wrap');
-  const buf = await el.screenshot({ type: 'png' });
-  await browser.close();
-  return buf;
+    await page.setContent(htmlMarca, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.evaluate(async () => {
+      const imgs = Array.from(document.querySelectorAll('img'));
+      await Promise.race([
+        Promise.all(imgs.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = res; img.onerror = res; }))),
+        new Promise(res => setTimeout(res, 7500))
+      ]);
+    });
+    const el = await page.$('#wrap');
+    return await el.screenshot({ type: 'png' });
+  } finally {
+    await browser.close();
+  }
 }
 
 async function renderizarFlyer({
@@ -641,252 +652,263 @@ async function renderizarFlyer({
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-web-security']
   });
 
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1080, height: alto, deviceScaleFactor: 2 });
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1080, height: alto, deviceScaleFactor: 2 });
 
-  const catLimpia = limpiarEmojis(categoria);
-  const titLimpio = limpiarEmojis(titulo);
-  const desLimpio = limpiarEmojis(destacar);
-  const bajLimpia = limpiarEmojis(bajada);
+    const catLimpia = limpiarEmojis(categoria);
+    const titLimpio = limpiarEmojis(titulo);
+    const desLimpio = limpiarEmojis(destacar);
+    const bajLimpia = limpiarEmojis(bajada);
 
-  let htmlModificado = templateHtml
-    .replace('FALLO DE LA CORTE: REHABILITAN LA VENTA DE TIERRAS A EXTRANJEROS TRAS EL DNU DE MILEI', titLimpio.replace(/"/g, '&quot;'))
-    .replace('VENTA DE TIERRAS A EXTRANJEROS', desLimpio.replace(/"/g, '&quot;'))
-    .replace('El máximo tribunal revocó la sentencia que frenaba el artículo 154 del DNU 70/23 al determinar que los excombatientes de Malvinas carecen de legitimación para demandar.', bajLimpia.replace(/"/g, '&quot;'))
-    .replace('POLÍTICA', catLimpia.replace(/"/g, '&quot;'));
+    let htmlModificado = templateHtml
+      .replace('FALLO DE LA CORTE: REHABILITAN LA VENTA DE TIERRAS A EXTRANJEROS TRAS EL DNU DE MILEI', () => titLimpio.replace(/"/g, '&quot;'))
+      .replace('VENTA DE TIERRAS A EXTRANJEROS', () => desLimpio.replace(/"/g, '&quot;'))
+      .replace('El máximo tribunal revocó la sentencia que frenaba el artículo 154 del DNU 70/23 al determinar que los excombatientes de Malvinas carecen de legitimación para demandar.', () => bajLimpia.replace(/"/g, '&quot;'))
+      .replace('POLÍTICA', () => catLimpia.replace(/"/g, '&quot;'));
 
-  if (fotoFinalUrl) {
-    htmlModificado = htmlModificado.replace(/https:\/\/images\.unsplash\.com\/[^"'\s)]+/g, fotoFinalUrl);
-  }
-
-  await page.setContent(htmlModificado, { waitUntil: 'networkidle0' });
-
-  await page.evaluate(({
-    url,
-    expandir,
-    modoUrgente,
-    modoHistoria,
-    modoVisual,
-    categoria,
-    titulo,
-    destacar,
-    bajada,
-    datoClave,
-    autorCita,
-    fuenteCredito,
-    numeroSlide
-  }) => {
-    document.body.style.webkitFontSmoothing = 'antialiased';
-    document.body.style.textRendering = 'optimizeLegibility';
-
-    const canvas = document.querySelector('#canvas');
-    if (!canvas) return;
-
-    const altoCanvas = modoHistoria ? 1920 : 1080;
-    if (modoHistoria) {
-      canvas.style.height = '1920px';
-      document.body.style.height = '1920px';
+    if (fotoFinalUrl) {
+      htmlModificado = htmlModificado.replace(/https:\/\/images\.unsplash\.com\/[^"'\s)]+/g, () => fotoFinalUrl);
     }
 
-    const accentColor = modoUrgente ? '#ef4444' : '#38bdf8';
+    await page.setContent(htmlModificado, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-    // Control matemático en el DOM contra forma de pistolita y palabras/números colgados
-    function blindarTipografiaProlija(el) {
-      if (!el) return;
-      el.style.textWrap = 'balance';
-
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
-      const nodosTexto = [];
-      let n;
-      while ((n = walker.nextNode())) {
-        if (n.nodeValue && n.nodeValue.trim().length > 0) nodosTexto.push(n);
+    // Espera inteligente de imágenes y fuentes con tope de 8s para no exceder nunca el timeout de Make
+    await page.evaluate(async () => {
+      if (document.fonts && document.fonts.ready) {
+        await Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 2500))]);
       }
-      if (nodosTexto.length > 0) {
-        const ultimoNodo = nodosTexto[nodosTexto.length - 1];
-        ultimoNodo.nodeValue = ultimoNodo.nodeValue.replace(/\s+(\S{1,4})\s+(\S+)\s*$/, '\u00A0$1\u00A0$2');
-        ultimoNodo.nodeValue = ultimoNodo.nodeValue.replace(/\s+(\S+)\s*$/, '\u00A0$1');
+      const imgs = Array.from(document.querySelectorAll('img'));
+      await Promise.race([
+        Promise.all(imgs.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = res; img.onerror = res; }))),
+        new Promise(res => setTimeout(res, 7500))
+      ]);
+    });
+
+    await page.evaluate(({
+      url,
+      expandir,
+      modoUrgente,
+      modoHistoria,
+      modoVisual,
+      categoria,
+      titulo,
+      destacar,
+      bajada,
+      datoClave,
+      autorCita,
+      fuenteCredito,
+      numeroSlide
+    }) => {
+      document.body.style.webkitFontSmoothing = 'antialiased';
+      document.body.style.textRendering = 'optimizeLegibility';
+
+      const canvas = document.querySelector('#canvas');
+      if (!canvas) return;
+
+      const altoCanvas = modoHistoria ? 1920 : 1080;
+      if (modoHistoria) {
+        canvas.style.height = '1920px';
+        document.body.style.height = '1920px';
       }
 
-      for (let intento = 0; intento < 7; intento++) {
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        const rects = Array.from(range.getClientRects()).filter(r => r.width > 4 && r.height > 4);
-        if (rects.length < 2) break;
+      const accentColor = modoUrgente ? '#ef4444' : '#38bdf8';
 
-        const lineas = [];
-        rects.forEach(r => {
-          const existente = lineas.find(l => Math.abs(l.top - r.top) < 8);
-          if (existente) {
-            existente.right = Math.max(existente.right, r.right);
-            existente.left = Math.min(existente.left, r.left);
-          } else {
-            lineas.push({ top: r.top, left: r.left, right: r.right });
+      function blindarTipografiaProlija(el) {
+        if (!el) return;
+        el.style.textWrap = 'balance';
+
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+        const nodosTexto = [];
+        let n;
+        while ((n = walker.nextNode())) {
+          if (n.nodeValue && n.nodeValue.trim().length > 0) nodosTexto.push(n);
+        }
+        if (nodosTexto.length > 0) {
+          const ultimoNodo = nodosTexto[nodosTexto.length - 1];
+          ultimoNodo.nodeValue = ultimoNodo.nodeValue.replace(/\s+(\S{1,4})\s+(\S+)\s*$/, '\u00A0$1\u00A0$2');
+          ultimoNodo.nodeValue = ultimoNodo.nodeValue.replace(/\s+(\S+)\s*$/, '\u00A0$1');
+        }
+
+        for (let intento = 0; intento < 7; intento++) {
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          const rects = Array.from(range.getClientRects()).filter(r => r.width > 4 && r.height > 4);
+          if (rects.length < 2) break;
+
+          const lineas = [];
+          rects.forEach(r => {
+            const existente = lineas.find(l => Math.abs(l.top - r.top) < 8);
+            if (existente) {
+              existente.right = Math.max(existente.right, r.right);
+              existente.left = Math.min(existente.left, r.left);
+            } else {
+              lineas.push({ top: r.top, left: r.left, right: r.right });
+            }
+          });
+
+          if (lineas.length < 2) break;
+          const anchoPrimera = lineas[0].right - lineas[0].left;
+          const anchoUltima = lineas[lineas.length - 1].right - lineas[lineas.length - 1].left;
+
+          if (anchoUltima >= anchoPrimera * 0.42) break;
+
+          const wActual = el.getBoundingClientRect().width;
+          el.style.maxWidth = `${Math.max(380, wActual - 45)}px`;
+        }
+      }
+
+      let fotoPrincipal = null;
+      const imgs = canvas.querySelectorAll('img');
+      imgs.forEach(img => {
+        img.style.imageRendering = '-webkit-optimize-contrast';
+        if (img.src.includes('unsplash') || img.id.includes('bg') || img.className.includes('bg') || img.width > 400) {
+          if (url) img.src = url;
+          fotoPrincipal = img;
+          if (expandir && url) {
+            img.style.objectFit = 'contain';
+            img.parentElement.style.backgroundImage = `url("${url}")`;
+            img.parentElement.style.backgroundSize = 'cover';
+            img.parentElement.style.backgroundPosition = 'center';
+            img.parentElement.style.backdropFilter = 'blur(28px)';
           }
-        });
-
-        if (lineas.length < 2) break;
-        const anchoPrimera = lineas[0].right - lineas[0].left;
-        const anchoUltima = lineas[lineas.length - 1].right - lineas[lineas.length - 1].left;
-
-        if (anchoUltima >= anchoPrimera * 0.42) break;
-
-        const wActual = el.getBoundingClientRect().width;
-        el.style.maxWidth = `${Math.max(380, wActual - 45)}px`;
-      }
-    }
-
-    let fotoPrincipal = null;
-    const imgs = canvas.querySelectorAll('img');
-    imgs.forEach(img => {
-      img.style.imageRendering = '-webkit-optimize-contrast';
-      if (img.src.includes('unsplash') || img.id.includes('bg') || img.className.includes('bg') || img.width > 400) {
-        if (url) img.src = url;
-        fotoPrincipal = img;
-        if (expandir && url) {
-          img.style.objectFit = 'contain';
-          img.parentElement.style.backgroundImage = `url("${url}")`;
-          img.parentElement.style.backgroundSize = 'cover';
-          img.parentElement.style.backgroundPosition = 'center';
-          img.parentElement.style.backdropFilter = 'blur(28px)';
         }
-      }
-    });
-
-    let esFotoClara = false;
-    if (fotoPrincipal && fotoPrincipal.complete && fotoPrincipal.naturalWidth > 0) {
-      try {
-        const c = document.createElement('canvas');
-        c.width = 40;
-        c.height = 40;
-        const ctx = c.getContext('2d');
-        ctx.drawImage(fotoPrincipal, 0, 0, 40, 40);
-        const data = ctx.getImageData(0, 20, 40, 20).data;
-        let suma = 0;
-        for (let i = 0; i < data.length; i += 4) {
-          suma += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-        }
-        esFotoClara = (suma / (data.length / 4)) > 125;
-      } catch (e) {}
-    }
-
-    if (esFotoClara && modoVisual === 'estandar') {
-      const refuerzo = document.createElement('div');
-      refuerzo.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:2;background:linear-gradient(to top, rgba(4,10,20,0.97) 0%, rgba(4,10,20,0.84) 46%, rgba(4,10,20,0.12) 100%);';
-      canvas.appendChild(refuerzo);
-    }
-
-    if (fuenteCredito) {
-      const badgeFuente = document.createElement('div');
-      badgeFuente.textContent = `FUENTE: ${fuenteCredito.toUpperCase()}`;
-      badgeFuente.style.cssText = 'position:absolute;top:34px;right:38px;z-index:30;background:rgba(6,14,26,0.72);backdrop-filter:blur(8px);color:rgba(255,255,255,0.85);font-family:sans-serif;font-size:15px;font-weight:700;letter-spacing:1.2px;padding:7px 14px;border-radius:6px;border:1px solid rgba(255,255,255,0.16);';
-      canvas.appendChild(badgeFuente);
-    }
-
-    if (numeroSlide) {
-      const badgeSlide = document.createElement('div');
-      badgeSlide.textContent = numeroSlide;
-      badgeSlide.style.cssText = `position:absolute;top:34px;left:38px;z-index:30;background:${accentColor};color:#050d1a;font-family:sans-serif;font-size:18px;font-weight:900;padding:7px 16px;border-radius:999px;`;
-      canvas.appendChild(badgeSlide);
-    }
-
-    if (modoVisual === 'cita' || modoVisual === 'dato') {
-      const tituloFormateado = destacar && titulo.includes(destacar)
-        ? titulo.replace(destacar, `<span style="color:${accentColor}">${destacar}</span>`)
-        : titulo;
-
-      const overlay = document.createElement('div');
-      overlay.style.cssText = 'position:absolute;inset:0;z-index:20;background:linear-gradient(160deg, rgba(6,15,28,0.94) 0%, rgba(9,22,42,0.97) 100%);display:flex;flex-direction:column;justify-content:space-between;padding:72px 72px 145px 72px;box-sizing:border-box;font-family:sans-serif;';
-
-      if (modoVisual === 'cita') {
-        overlay.innerHTML = `
-          <div>
-            <span style="display:inline-block;background:${accentColor};color:#050d1a;font-weight:900;font-size:18px;letter-spacing:1.5px;padding:8px 18px;border-radius:6px;text-transform:uppercase;">${categoria}</span>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:26px;">
-            <div style="display:flex;align-items:center;gap:26px;">
-              ${url ? `<img src="${url}" style="width:140px;height:140px;border-radius:50%;object-fit:cover;border:4px solid ${accentColor};box-shadow:0 12px 30px rgba(0,0,0,0.45);" />` : ''}
-              <div>
-                <div style="color:${accentColor};font-size:74px;line-height:0.6;font-weight:900;">“</div>
-                <div style="color:#ffffff;font-size:21px;font-weight:800;letter-spacing:1px;text-transform:uppercase;margin-top:8px;">${autorCita || 'DECLARACIÓN DESTACADA'}</div>
-              </div>
-            </div>
-            <div class="texto-equilibrado" style="color:#ffffff;font-size:46px;font-weight:900;line-height:1.14;letter-spacing:-0.5px;">${tituloFormateado}</div>
-            <div class="texto-equilibrado" style="color:rgba(255,255,255,0.82);font-size:25px;line-height:1.38;font-weight:400;border-left:4px solid ${accentColor};padding-left:20px;">${bajada}</div>
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid rgba(255,255,255,0.15);padding-top:22px;">
-            <span style="color:#ffffff;font-weight:900;font-size:22px;letter-spacing:1.5px;">EL REGISTRO SUR</span>
-            <span style="color:${accentColor};font-weight:700;font-size:19px;">@elregistrosur</span>
-          </div>
-        `;
-      } else {
-        overlay.innerHTML = `
-          <div>
-            <span style="display:inline-block;background:${accentColor};color:#050d1a;font-weight:900;font-size:18px;letter-spacing:1.5px;padding:8px 18px;border-radius:6px;text-transform:uppercase;">${categoria}</span>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:22px;text-align:left;">
-            <div style="color:${accentColor};font-size:122px;font-weight:900;line-height:0.95;letter-spacing:-2px;text-shadow:0 10px 35px rgba(0,0,0,0.5);">${datoClave || 'DATO CLAVE'}</div>
-            <div class="texto-equilibrado" style="color:#ffffff;font-size:48px;font-weight:900;line-height:1.12;">${tituloFormateado}</div>
-            <div class="texto-equilibrado" style="color:rgba(255,255,255,0.84);font-size:26px;line-height:1.38;">${bajada}</div>
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid rgba(255,255,255,0.15);padding-top:22px;">
-            <span style="color:#ffffff;font-weight:900;font-size:22px;letter-spacing:1.5px;">EL REGISTRO SUR</span>
-            <span style="color:${accentColor};font-weight:700;font-size:19px;">@elregistrosur</span>
-          </div>
-        `;
-      }
-      canvas.appendChild(overlay);
-      overlay.querySelectorAll('.texto-equilibrado').forEach(blindarTipografiaProlija);
-      return;
-    }
-
-    if (modoUrgente) {
-      canvas.querySelectorAll('*').forEach(el => {
-        const style = window.getComputedStyle(el);
-        if (style.color === 'rgb(56, 189, 248)' || style.color === 'rgb(0, 174, 239)') el.style.color = '#ef4444';
-        if (style.backgroundColor === 'rgb(56, 189, 248)' || style.backgroundColor === 'rgb(0, 174, 239)') el.style.backgroundColor = '#ef4444';
       });
-    }
 
-    const bloquesTexto = canvas.querySelectorAll('h1, h2, p, .titulo, .bajada, [class*="title"], [class*="sub"]');
-    bloquesTexto.forEach(el => {
-      if (el.innerText && el.innerText.trim().length > 6) {
-        blindarTipografiaProlija(el);
+      let esFotoClara = false;
+      if (fotoPrincipal && fotoPrincipal.complete && fotoPrincipal.naturalWidth > 0) {
+        try {
+          const c = document.createElement('canvas');
+          c.width = 40;
+          c.height = 40;
+          const ctx = c.getContext('2d');
+          ctx.drawImage(fotoPrincipal, 0, 0, 40, 40);
+          const data = ctx.getImageData(0, 20, 40, 20).data;
+          let suma = 0;
+          for (let i = 0; i < data.length; i += 4) {
+            suma += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+          }
+          esFotoClara = (suma / (data.length / 4)) > 125;
+        } catch (e) {}
       }
+
+      if (esFotoClara && modoVisual === 'estandar') {
+        const refuerzo = document.createElement('div');
+        refuerzo.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:2;background:linear-gradient(to top, rgba(4,10,20,0.97) 0%, rgba(4,10,20,0.84) 46%, rgba(4,10,20,0.12) 100%);';
+        canvas.appendChild(refuerzo);
+      }
+
+      if (fuenteCredito) {
+        const badgeFuente = document.createElement('div');
+        badgeFuente.textContent = `FUENTE: ${fuenteCredito.toUpperCase()}`;
+        badgeFuente.style.cssText = 'position:absolute;top:34px;right:38px;z-index:30;background:rgba(6,14,26,0.72);backdrop-filter:blur(8px);color:rgba(255,255,255,0.85);font-family:sans-serif;font-size:15px;font-weight:700;letter-spacing:1.2px;padding:7px 14px;border-radius:6px;border:1px solid rgba(255,255,255,0.16);';
+        canvas.appendChild(badgeFuente);
+      }
+
+      if (numeroSlide) {
+        const badgeSlide = document.createElement('div');
+        badgeSlide.textContent = numeroSlide;
+        badgeSlide.style.cssText = `position:absolute;top:34px;left:38px;z-index:30;background:${accentColor};color:#050d1a;font-family:sans-serif;font-size:18px;font-weight:900;padding:7px 16px;border-radius:999px;`;
+        canvas.appendChild(badgeSlide);
+      }
+
+      if (modoVisual === 'cita' || modoVisual === 'dato') {
+        const tituloFormateado = destacar && titulo.includes(destacar)
+          ? titulo.replace(destacar, `<span style="color:${accentColor}">${destacar}</span>`)
+          : titulo;
+
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:absolute;inset:0;z-index:20;background:linear-gradient(160deg, rgba(6,15,28,0.94) 0%, rgba(9,22,42,0.97) 100%);display:flex;flex-direction:column;justify-content:space-between;padding:72px 72px 145px 72px;box-sizing:border-box;font-family:sans-serif;';
+
+        if (modoVisual === 'cita') {
+          overlay.innerHTML = `
+            <div>
+              <span style="display:inline-block;background:${accentColor};color:#050d1a;font-weight:900;font-size:18px;letter-spacing:1.5px;padding:8px 18px;border-radius:6px;text-transform:uppercase;">${categoria}</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:26px;">
+              <div style="display:flex;align-items:center;gap:26px;">
+                ${url ? `<img src="${url}" style="width:140px;height:140px;border-radius:50%;object-fit:cover;border:4px solid ${accentColor};box-shadow:0 12px 30px rgba(0,0,0,0.45);" />` : ''}
+                <div>
+                  <div style="color:${accentColor};font-size:74px;line-height:0.6;font-weight:900;">“</div>
+                  <div style="color:#ffffff;font-size:21px;font-weight:800;letter-spacing:1px;text-transform:uppercase;margin-top:8px;">${autorCita || 'DECLARACIÓN DESTACADA'}</div>
+                </div>
+              </div>
+              <div class="texto-equilibrado" style="color:#ffffff;font-size:46px;font-weight:900;line-height:1.14;letter-spacing:-0.5px;">${tituloFormateado}</div>
+              <div class="texto-equilibrado" style="color:rgba(255,255,255,0.82);font-size:25px;line-height:1.38;font-weight:400;border-left:4px solid ${accentColor};padding-left:20px;">${bajada}</div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid rgba(255,255,255,0.15);padding-top:22px;">
+              <span style="color:#ffffff;font-weight:900;font-size:22px;letter-spacing:1.5px;">EL REGISTRO SUR</span>
+              <span style="color:${accentColor};font-weight:700;font-size:19px;">@elregistrosur</span>
+            </div>
+          `;
+        } else {
+          overlay.innerHTML = `
+            <div>
+              <span style="display:inline-block;background:${accentColor};color:#050d1a;font-weight:900;font-size:18px;letter-spacing:1.5px;padding:8px 18px;border-radius:6px;text-transform:uppercase;">${categoria}</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:22px;text-align:left;">
+              <div style="color:${accentColor};font-size:122px;font-weight:900;line-height:0.95;letter-spacing:-2px;text-shadow:0 10px 35px rgba(0,0,0,0.5);">${datoClave || 'DATO CLAVE'}</div>
+              <div class="texto-equilibrado" style="color:#ffffff;font-size:48px;font-weight:900;line-height:1.12;">${tituloFormateado}</div>
+              <div class="texto-equilibrado" style="color:rgba(255,255,255,0.84);font-size:26px;line-height:1.38;">${bajada}</div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid rgba(255,255,255,0.15);padding-top:22px;">
+              <span style="color:#ffffff;font-weight:900;font-size:22px;letter-spacing:1.5px;">EL REGISTRO SUR</span>
+              <span style="color:${accentColor};font-weight:700;font-size:19px;">@elregistrosur</span>
+            </div>
+          `;
+        }
+        canvas.appendChild(overlay);
+        overlay.querySelectorAll('.texto-equilibrado').forEach(blindarTipografiaProlija);
+        return;
+      }
+
+      if (modoUrgente) {
+        canvas.querySelectorAll('*').forEach(el => {
+          const style = window.getComputedStyle(el);
+          if (style.color === 'rgb(56, 189, 248)' || style.color === 'rgb(0, 174, 239)') el.style.color = '#ef4444';
+          if (style.backgroundColor === 'rgb(56, 189, 248)' || style.backgroundColor === 'rgb(0, 174, 239)') el.style.backgroundColor = '#ef4444';
+        });
+      }
+
+      const bloquesTexto = canvas.querySelectorAll('h1, h2, h3, p, .titulo, .bajada, [class*="title"], [class*="sub"]');
+      bloquesTexto.forEach(el => {
+        if (el.innerText && el.innerText.trim().length > 6) {
+          blindarTipografiaProlija(el);
+        }
+      });
+
+      const titulares = canvas.querySelectorAll('h1, h2, h3, .titulo, [class*="title"]');
+      titulares.forEach(el => {
+        let fontSize = parseFloat(window.getComputedStyle(el).fontSize);
+        const limiteInferior = altoCanvas - 145;
+        while (el.getBoundingClientRect().bottom > limiteInferior && fontSize > 26) {
+          fontSize -= 2;
+          el.style.fontSize = `${fontSize}px`;
+          el.style.lineHeight = '1.12';
+        }
+      });
+    }, {
+      url: fotoFinalUrl,
+      expandir: expandirSinCloudinary,
+      modoUrgente: esUrgente,
+      modoHistoria: esHistoria,
+      modoVisual,
+      categoria: catLimpia,
+      titulo: titLimpio,
+      destacar: desLimpio,
+      bajada: bajLimpia,
+      datoClave,
+      autorCita,
+      fuenteCredito,
+      numeroSlide
     });
 
-    const titulares = canvas.querySelectorAll('h1, h2, .titulo, [class*="title"]');
-    titulares.forEach(el => {
-      let fontSize = parseFloat(window.getComputedStyle(el).fontSize);
-      const limiteInferior = altoCanvas - 145;
-      while (el.getBoundingClientRect().bottom > limiteInferior && fontSize > 26) {
-        fontSize -= 2;
-        el.style.fontSize = `${fontSize}px`;
-        el.style.lineHeight = '1.12';
-      }
-    });
-  }, {
-    url: fotoFinalUrl,
-    expandir: expandirSinCloudinary,
-    modoUrgente: esUrgente,
-    modoHistoria: esHistoria,
-    modoVisual,
-    categoria: catLimpia,
-    titulo: titLimpio,
-    destacar: desLimpio,
-    bajada: bajLimpia,
-    datoClave,
-    autorCita,
-    fuenteCredito,
-    numeroSlide
-  });
-
-  await page.evaluate(() => document.fonts.ready);
-  await new Promise(r => setTimeout(r, 850));
-
-  const canvasElement = await page.$('#canvas');
-  const imageBuffer = await canvasElement.screenshot({ type: 'png' });
-  await browser.close();
-  return imageBuffer;
+    await new Promise(r => setTimeout(r, 350));
+    const canvasElement = await page.$('#canvas');
+    return await canvasElement.screenshot({ type: 'png' });
+  } finally {
+    await browser.close();
+  }
 }
 
 async function enviarFotoConBotonesTelegram(imageBuffer, captionTexto) {
@@ -921,8 +943,11 @@ async function generarDatosRadar(forzar = false) {
 
   noticiasEnviadasRadar.add(elegida.titulo);
 
-  const extraido = await extraerNoticiaDeLink(elegida.link);
-  const contexto = await buscarContextoEnGoogleNews(elegida.titulo);
+  const [extraido, contexto] = await Promise.all([
+    extraerNoticiaDeLink(elegida.link),
+    buscarContextoEnGoogleNews(elegida.titulo)
+  ]);
+
   const textoCompleto = `CATEGORÍA: ${elegida.categoriaOrigen.toUpperCase()}\nMEDIO DE ORIGEN: ${elegida.medio}\nTITULAR: ${elegida.titulo}\n${extraido.textoExtraido}`;
 
   const noticiaIA = await procesarNoticiaConIA(textoCompleto, contexto, false);
@@ -981,7 +1006,7 @@ async function generarDatosRadar(forzar = false) {
 async function ejecutarAlertaRuta3YServicios() {
   const queryRuta = '("Ruta 3" OR "Ruta Nacional 3" OR "Ramón Santos" OR "Caleta Olivia") (corte OR tránsito OR agua OR luz OR acueducto OR viento OR alerta) when:6h';
   const url = `https://news.google.com/rss/search?q=${encodeURIComponent(queryRuta)}&hl=es-419&gl=AR&ceid=AR:es-419`;
-  const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  const resp = await fetch(url, { signal: AbortSignal.timeout(6500) });
   const xml = await resp.text();
 
   const items = [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<link>([\s\S]*?)<\/link>[\s\S]*?<\/item>/gi)]
@@ -995,8 +1020,11 @@ async function ejecutarAlertaRuta3YServicios() {
   const elegida = items[0];
   noticiasEnviadasRadar.add(elegida.titulo);
 
-  const extraido = await extraerNoticiaDeLink(elegida.link);
-  const contexto = await buscarContextoEnGoogleNews(elegida.titulo);
+  const [extraido, contexto] = await Promise.all([
+    extraerNoticiaDeLink(elegida.link),
+    buscarContextoEnGoogleNews(elegida.titulo)
+  ]);
+
   const noticiaIA = await procesarNoticiaConIA(`ALERTA VIAL / SERVICIOS ZONA NORTE: ${elegida.titulo}\n${extraido.textoExtraido}`, contexto, false);
   if (noticiaIA.descartar) return null;
 
@@ -1130,7 +1158,7 @@ Devolvé ÚNICAMENTE este JSON:
 
 async function ejecutarParteClima() {
   const clima = await obtenerDatosClimaCaleta();
-  const noticiaIA = await procesarNoticiaConIA(clima.texto, '', false);
+  const noticiaIA = await procesarNoticiaConIA(clima.texto, 'Fuente meteorológica oficial Open-Meteo Caleta Olivia.', false);
   const fotoClima = construirUrlPollinationsHD('Caleta Olivia Patagonia Argentina coastal city sea sky dramatic weather photography');
 
   const imageBuffer = await renderizarFlyer({
@@ -1446,7 +1474,7 @@ app.post('/generar', async (req, res) => {
 
     // 9. CARRUSEL 3x (.carrusel)
     if (comando === 'carrusel' && ultimoEstado.titulo) {
-      const noticiaIA = await procesarNoticiaConIA(`Generá el carrusel de 3 placas para esta noticia: ${ultimoEstado.titulo}. ${ultimoEstado.copy}`, '', true);
+      const noticiaIA = await procesarNoticiaConIA(`Generá el carrusel de 3 placas para esta noticia: ${ultimoEstado.titulo}. ${ultimoEstado.copy}`, 'Borrador ya verificado.', true);
       const slides = (noticiaIA.slides_carrusel && noticiaIA.slides_carrusel.length >= 3)
         ? noticiaIA.slides_carrusel.slice(0, 3)
         : [
@@ -1728,12 +1756,17 @@ app.post('/generar', async (req, res) => {
     const urlDetectada = textoParaProcesar.match(/https?:\/\/[^\s]+/i)?.[0];
     let fotoDeLink = '';
     let fuenteLink = '';
+
+    const [extraidoLink, contextoWeb] = await Promise.all([
+      urlDetectada ? extraerNoticiaDeLink(urlDetectada) : Promise.resolve({ fotoExtraida: '', fuenteDominio: '', textoExtraido: '' }),
+      buscarContextoEnGoogleNews(textoParaProcesar)
+    ]);
+
     if (urlDetectada) {
-      const extraido = await extraerNoticiaDeLink(urlDetectada);
-      fotoDeLink = extraido.fotoExtraida;
-      fuenteLink = extraido.fuenteDominio;
-      if (extraido.textoExtraido) {
-        textoParaProcesar += `\n\n[DATOS EXTRAÍDOS DEL LINK]:\n${extraido.textoExtraido}`;
+      fotoDeLink = extraidoLink.fotoExtraida;
+      fuenteLink = extraidoLink.fuenteDominio;
+      if (extraidoLink.textoExtraido) {
+        textoParaProcesar += `\n\n[DATOS EXTRAÍDOS DEL LINK]:\n${extraidoLink.textoExtraido}`;
       }
     }
 
@@ -1741,7 +1774,6 @@ app.post('/generar', async (req, res) => {
     const esEdicion = comando === 'editar' || comando === 'modificar' || comando === 'comandoeditar';
     const esUrgente = comando === 'urgente' || comando === 'comandourgente' || (esEdicion && ultimoEstado.urgente);
 
-    const contextoWeb = await buscarContextoEnGoogleNews(textoParaProcesar);
     let promptImagenIA = ultimoEstado.prompt_imagen_ia;
     let busquedaFotoWeb = '';
     let datoClave = ultimoEstado.dato_clave;
@@ -1749,9 +1781,10 @@ app.post('/generar', async (req, res) => {
     let fuenteCredito = fuenteLink || ultimoEstado.fuente_credito;
 
     if (textoParaProcesar.length > 0) {
-      const noticiaIA = await procesarNoticiaConIA(textoParaProcesar, contextoWeb, esEdicion);
+      const noticiaIA = await procesarNoticiaConIA(textoParaProcesar, contextoWeb || 'Contexto verificado.', esEdicion);
 
       if (!esEdicion && noticiaIA.descartar) {
+        await enviarMensajeTelegram(`ℹ️ La noticia fue descartada por falta de respaldo verificable: ${noticiaIA.motivo_descarte || ''}`);
         return res.json({
           ok: true,
           descartado: true,
@@ -1843,8 +1876,10 @@ app.post('/generar', async (req, res) => {
       imagen_base64: imageBuffer.toString('base64')
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    console.error('Error en /generar:', err.message);
+    await enviarMensajeTelegram(`⚠️ Aviso del servidor al procesar el pedido: ${err.message}`);
+    // Devuelve 200 OK con imagen_base64 vacía para no bloquear ni encolar Make
+    return res.status(200).json({ ok: false, descartado: true, error: err.message, imagen_base64: '' });
   }
 });
 
