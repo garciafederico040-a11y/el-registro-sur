@@ -106,54 +106,62 @@ function filtrarEmojisSegurosRedes(texto) {
     .trim();
 }
 
-// Llamada compacta con límite de tokens controlado y respaldo automático en llama-3.3-70b-versatile
+// Llamada exclusiva a openai/gpt-oss-120b con reintento limpio y extracción segura de JSON
 async function llamarGroqChat(messages) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('Falta configurar GROQ_API_KEY en Render.');
 
-  const modelos = ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile'];
   let ultimoError = '';
 
-  for (const modelo of modelos) {
-    for (let intento = 1; intento <= 2; intento++) {
-      try {
-        const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          signal: AbortSignal.timeout(14000),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model: modelo,
-            temperature: 0.3,
-            max_tokens: 1100,
-            response_format: { type: 'json_object' },
-            messages
-          })
-        });
-
-        if ((resp.status === 429 || resp.status === 413) && intento === 1) {
-          ultimoError = `Groq (${modelo}) status ${resp.status}`;
-          await new Promise(r => setTimeout(r, 1500));
-          break; // Pasa al modelo de respaldo sin demorar
-        }
-
-        if (!resp.ok) {
-          ultimoError = `Error de Groq (${resp.status}): ${await resp.text()}`;
-          break;
-        }
-
-        const data = await resp.json();
-        const rawContent = data?.choices?.[0]?.message?.content || '{}';
-        const jsonLimpio = rawContent.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
-        return JSON.parse(jsonLimpio);
-      } catch (e) {
-        ultimoError = e.message;
+  for (let intento = 1; intento <= 3; intento++) {
+    try {
+      const usarJsonMode = intento < 3;
+      const bodyPayload = {
+        model: 'openai/gpt-oss-120b',
+        temperature: 0.3,
+        messages
+      };
+      if (usarJsonMode) {
+        bodyPayload.response_format = { type: 'json_object' };
       }
+
+      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        signal: AbortSignal.timeout(16000),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(bodyPayload)
+      });
+
+      if (resp.status === 429 && intento < 3) {
+        const retryHeader = parseInt(resp.headers.get('retry-after') || '0', 10);
+        const esperaMs = retryHeader > 0 ? Math.min(retryHeader * 1000, 6000) : intento * 3500;
+        console.warn(`Cupo Groq 429. Esperando ${esperaMs}ms (intento ${intento}/3)...`);
+        await new Promise(r => setTimeout(r, esperaMs));
+        continue;
+      }
+
+      if (!resp.ok) {
+        ultimoError = `Error de Groq (${resp.status}): ${await resp.text()}`;
+        if (resp.status === 400 && intento < 3) {
+          continue; // Reintenta extrayendo JSON manualmente
+        }
+        throw new Error(ultimoError);
+      }
+
+      const data = await resp.json();
+      const rawContent = data?.choices?.[0]?.message?.content || '{}';
+      const matchJson = rawContent.match(/\{[\s\S]*\}/);
+      const jsonStr = matchJson ? matchJson[0] : rawContent;
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      ultimoError = e.message;
+      if (intento === 3) throw new Error(ultimoError);
+      await new Promise(r => setTimeout(r, 2000));
     }
   }
-  throw new Error(ultimoError || 'No se pudo conectar con Groq');
 }
 
 function generarTecladoTactil() {
@@ -248,7 +256,7 @@ async function transcribirAudioConGroq(audioUrl) {
     throw new Error(`Error transcribiendo audio (${resp.status}): ${await resp.text()}`);
   }
   const data = await resp.json();
-  return (data.text || '').slice(0, 1800);
+  return (data.text || '').slice(0, 1400);
 }
 
 // Extractor limpio con tope estricto de caracteres para nunca exceder los 8000 TPM de Groq
@@ -272,7 +280,6 @@ async function extraerNoticiaDeLink(url) {
     const ogDescMatch = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i) ||
                         html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
 
-    // Elimina scripts, estilos y SVGs antes de buscar párrafos <p> reales
     const htmlSinBasura = html
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -282,9 +289,9 @@ async function extraerNoticiaDeLink(url) {
     const parrafos = [...htmlSinBasura.matchAll(/<p(?:\s[^>]*)?>([\s\S]*?)<\/p>/gi)]
       .map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s{2,}/g, ' ').trim())
       .filter(t => t.length > 55 && !t.includes('{') && !t.includes('function('))
-      .slice(0, 6)
+      .slice(0, 5)
       .join('\n')
-      .slice(0, 1500);
+      .slice(0, 1100);
 
     let fotoUrl = ogImageMatch ? ogImageMatch[1] : '';
     if (fotoUrl && fotoUrl.startsWith('/')) {
@@ -293,13 +300,13 @@ async function extraerNoticiaDeLink(url) {
     }
 
     const dominio = new URL(url).hostname.replace('www.', '').split('.')[0].toUpperCase();
-    const tituloLimpio = (ogTitleMatch ? ogTitleMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 220);
-    const bajadaMeta = (ogDescMatch ? ogDescMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 350);
+    const tituloLimpio = (ogTitleMatch ? ogTitleMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 200);
+    const bajadaMeta = (ogDescMatch ? ogDescMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 300);
 
     return {
       fotoExtraida: fotoUrl,
       fuenteDominio: dominio,
-      textoExtraido: `TÍTULO ORIGINAL: ${tituloLimpio}\nBAJADA: ${bajadaMeta}\nCUERPO: ${parrafos}`.slice(0, 1900)
+      textoExtraido: `TÍTULO ORIGINAL: ${tituloLimpio}\nBAJADA: ${bajadaMeta}\nCUERPO: ${parrafos}`.slice(0, 1400)
     };
   } catch (e) {
     return { fotoExtraida: '', fuenteDominio: '', textoExtraido: '' };
@@ -310,7 +317,7 @@ async function buscarContextoEnGoogleNews(consulta) {
   try {
     const queryLimpia = consulta
       .replace(/https?:\/\/\S+/g, '')
-      .replace(/\[DATOS EXTRAÍDOS[\s\S]*/i, '')
+      .replace(/TÍTULO ORIGINAL:[\s\S]*/i, '')
       .replace(/^\.[a-zA-Z0-9]+\s*/i, '')
       .trim()
       .split(/\s+/)
@@ -326,7 +333,7 @@ async function buscarContextoEnGoogleNews(consulta) {
     const items = bloques.slice(0, 4).map(b => {
       const tit = b.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/<!\[CDATA\[|\]\]>/g, '').trim() || '';
       return tit ? `- ${tit}` : '';
-    }).filter(Boolean).join('\n').slice(0, 600);
+    }).filter(Boolean).join('\n').slice(0, 450);
 
     return items ? `\nANTECEDENTES EN MEDIOS:\n${items}` : '';
   } catch (e) {
@@ -376,7 +383,7 @@ async function leerUnFeedRss(fuente) {
         .replace(/<[^>]+>/g, ' ')
         .replace(/\s{2,}/g, ' ')
         .trim()
-        .slice(0, 320);
+        .slice(0, 280);
 
       const medio = sourceMatch
         ? sourceMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim()
@@ -558,8 +565,8 @@ async function auditarYResolverImagen({
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
-  const textoRecortado = String(textoCrudo || '').slice(0, 2200);
-  const contextoRecortado = String(contextoWeb || '').slice(0, 600);
+  const textoRecortado = String(textoCrudo || '').slice(0, 1500);
+  const contextoRecortado = String(contextoWeb || '').slice(0, 450);
 
   const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), diario digital de Caleta Olivia, Santa Cruz.
 IDIOMA: Estrictamente CASTELLANO DE ARGENTINA (jamás escribas "fortes", usá "fuertes").
@@ -601,7 +608,7 @@ Devolvé ÚNICAMENTE este JSON:
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: String(ultimoEstado.copy || '').slice(0, 900)
+        copy: String(ultimoEstado.copy || '').slice(0, 700)
       })}\n\nCambio pedido: "${textoRecortado}". Devolvé JSON en castellano.`
     : `Noticia:\n"${textoRecortado}"\n${contextoRecortado}\nRedactá en castellano de Argentina en JSON.`;
 
@@ -1130,10 +1137,10 @@ async function ejecutarAlertaRuta3YServicios() {
 
 async function ejecutarResumenDiarioCarrusel() {
   const candidatas = await obtenerTodasLasCandidatasRadar();
-  const titulares = candidatas.slice(0, 15)
+  const titulares = candidatas.slice(0, 14)
     .map(t => `- [${t.medio}] ${t.titulo}`)
     .join('\n')
-    .slice(0, 1600);
+    .slice(0, 1400);
 
   const promptResumen = `Sos el Editor Jefe de 'EL REGISTRO SUR' (Caleta Olivia, Santa Cruz). Redactá estrictamente en castellano.
 A partir de los hechos confirmados de hoy en Argentina y Santa Cruz, armá el RESUMEN DIARIO EN CARRUSEL de 5 placas:
@@ -1570,7 +1577,7 @@ app.post('/generar', async (req, res) => {
         categoria: ultimoEstado.categoria,
         titulo: slides[0].titulo,
         destacar: slides[0].destacar,
-        bajada: slides[0].destacar,
+        bajada: slides[0].bajada,
         copy: ultimoEstado.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
@@ -1816,7 +1823,7 @@ app.post('/generar', async (req, res) => {
       fotoDeLink = extraidoLink.fotoExtraida;
       fuenteLink = extraidoLink.fuenteDominio;
       if (extraidoLink.textoExtraido) {
-        textoParaProcesar = `${textoParaProcesar}\n\n${extraidoLink.textoExtraido}`.slice(0, 2200);
+        textoParaProcesar = `${textoParaProcesar}\n\n${extraidoLink.textoExtraido}`.slice(0, 1500);
       }
     }
 
