@@ -11,7 +11,6 @@ const templateHtml = fs.readFileSync(path.join(__dirname, 'template.html'), 'utf
 const TELEGRAM_TOKEN = '9253246227:AAFaJzhi3uxaoWLuxg9E0HZ4WfT0YdPts6w';
 const EDITOR_CHAT_ID = '6008268963';
 
-// Feeds RSS directos de los portales + radares compactos para que nunca devuelva vacío
 const FUENTES_RSS_RADAR = [
   { url: 'https://laopinionaustral.com.ar/feed/', medio: 'LA OPINIÓN AUSTRAL', categoria: 'regional' },
   { url: 'https://infocaleta.com/v2/feed/', medio: 'INFOCALETA', categoria: 'regional' },
@@ -64,10 +63,10 @@ let ultimoClimaDiaEnviado = '';
 let ultimoResumenDiaEnviado = '';
 let ultimoComandoTexto = '';
 let ultimoComandoTimestamp = 0;
+let indiceClaveGroq = 0;
 
-app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Radar 21 Medios activo'));
+app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Multi-Key activo'));
 
-// Lista blanca de emojis Unicode 6.0-11.0 100% compatibles con Facebook Web y Windows (sin U+FE0F ni banderas)
 const EMOJIS_SEGUROS_META = new Set([
   '🚨', '🔴', '🟠', '🟡', '🚧', '🚔', '🚒', '🚑', '🛑',
   '💨', '🌀', '🌊', '💧', '☔', '⛄', '⛅', '⚡', '🔥', '🌈',
@@ -106,16 +105,64 @@ function filtrarEmojisSegurosRedes(texto) {
     .trim();
 }
 
-// Llamada exclusiva a openai/gpt-oss-120b con reintento limpio y extracción segura de JSON
-async function llamarGroqChat(messages) {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error('Falta configurar GROQ_API_KEY en Render.');
+function asegurarDestacadoEnTitulo(titulo, destacar) {
+  const tit = limpiarEmojis(titulo).toUpperCase();
+  let des = limpiarEmojis(destacar).toUpperCase();
+  if (!tit) return { titulo: '', destacar: '' };
+  if (des && tit.includes(des) && des.length >= 3) {
+    return { titulo: tit, destacar: des };
+  }
+  const palabras = tit.split(/\s+/).filter(Boolean);
+  if (palabras.length >= 4) {
+    des = palabras.slice(0, 3).join(' ');
+  } else {
+    des = palabras.slice(0, 2).join(' ');
+  }
+  return { titulo: tit, destacar: des };
+}
 
+function asegurarBajadaCompleta(bajada, copy) {
+  let baj = limpiarEmojis(bajada);
+  if (baj && !/[.!?]$/.test(baj)) baj += '.';
+
+  if (baj.length >= 105) return baj;
+
+  const bloques = limpiarEmojis(copy)
+    .split(/\n+/)
+    .map(l => l.trim())
+    .filter(l => l.length > 65 && l !== l.toUpperCase() && !l.startsWith('#') && !l.startsWith('---') && !l.includes('@elregistrosur'));
+
+  if (bloques.length > 0) {
+    const primeraOracion = bloques[0].match(/^[^.!?]+[.!?]/)?.[0]?.trim() || bloques[0];
+    if (primeraOracion.length >= 95 && primeraOracion.length <= 185) {
+      return primeraOracion;
+    }
+    if (baj.length < 95) {
+      const combinada = `${baj} ${primeraOracion}`.replace(/\s{2,}/g, ' ').trim();
+      if (combinada.length <= 185) return combinada;
+      return combinada.slice(0, 175).replace(/\s+\S*$/, '') + '.';
+    }
+  }
+  return baj;
+}
+
+function obtenerListaClavesGroq() {
+  const raw = process.env.GROQ_API_KEY || '';
+  const claves = raw.split(',').map(k => k.trim()).filter(Boolean);
+  if (claves.length === 0) throw new Error('Falta configurar GROQ_API_KEY en Render.');
+  return claves;
+}
+
+async function llamarGroqChat(messages) {
+  const claves = obtenerListaClavesGroq();
+  const totalIntentos = Math.max(claves.length * 2, 3);
   let ultimoError = '';
 
-  for (let intento = 1; intento <= 3; intento++) {
+  for (let intento = 0; intento < totalIntentos; intento++) {
+    const apiKey = claves[(indiceClaveGroq++) % claves.length];
+    const usarJsonMode = intento < totalIntentos - 1;
+
     try {
-      const usarJsonMode = intento < 3;
       const bodyPayload = {
         model: 'openai/gpt-oss-120b',
         temperature: 0.3,
@@ -127,7 +174,7 @@ async function llamarGroqChat(messages) {
 
       const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
-        signal: AbortSignal.timeout(16000),
+        signal: AbortSignal.timeout(15000),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apiKey}`
@@ -135,19 +182,17 @@ async function llamarGroqChat(messages) {
         body: JSON.stringify(bodyPayload)
       });
 
-      if (resp.status === 429 && intento < 3) {
-        const retryHeader = parseInt(resp.headers.get('retry-after') || '0', 10);
-        const esperaMs = retryHeader > 0 ? Math.min(retryHeader * 1000, 6000) : intento * 3500;
-        console.warn(`Cupo Groq 429. Esperando ${esperaMs}ms (intento ${intento}/3)...`);
-        await new Promise(r => setTimeout(r, esperaMs));
+      if (resp.status === 429 || resp.status === 413) {
+        ultimoError = `Groq (${resp.status}) límite alcanzado`;
+        if (claves.length === 1 || intento >= claves.length) {
+          await new Promise(r => setTimeout(r, 2500));
+        }
         continue;
       }
 
       if (!resp.ok) {
         ultimoError = `Error de Groq (${resp.status}): ${await resp.text()}`;
-        if (resp.status === 400 && intento < 3) {
-          continue; // Reintenta extrayendo JSON manualmente
-        }
+        if (resp.status === 400 && intento < totalIntentos - 1) continue;
         throw new Error(ultimoError);
       }
 
@@ -158,8 +203,8 @@ async function llamarGroqChat(messages) {
       return JSON.parse(jsonStr);
     } catch (e) {
       ultimoError = e.message;
-      if (intento === 3) throw new Error(ultimoError);
-      await new Promise(r => setTimeout(r, 2000));
+      if (intento === totalIntentos - 1) throw new Error(ultimoError);
+      if (claves.length === 1) await new Promise(r => setTimeout(r, 1500));
     }
   }
 }
@@ -237,7 +282,8 @@ async function resolverArchivoTelegram(valorRecibido) {
 }
 
 async function transcribirAudioConGroq(audioUrl) {
-  const apiKey = process.env.GROQ_API_KEY;
+  const claves = obtenerListaClavesGroq();
+  const apiKey = claves[(indiceClaveGroq++) % claves.length];
   const audioResp = await fetch(audioUrl);
   const arrayBuffer = await audioResp.arrayBuffer();
 
@@ -259,7 +305,6 @@ async function transcribirAudioConGroq(audioUrl) {
   return (data.text || '').slice(0, 1400);
 }
 
-// Extractor limpio con tope estricto de caracteres para nunca exceder los 8000 TPM de Groq
 async function extraerNoticiaDeLink(url) {
   try {
     if (!url || url.includes('news.google.com')) {
@@ -274,7 +319,10 @@ async function extraerNoticiaDeLink(url) {
 
     const ogImageMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
                          html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ||
-                         html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i);
+                         html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i) ||
+                         html.match(/<img[^>]+class=["'][^"']*wp-post-image[^"']*["'][^>]+src=["']([^"']+)["']/i) ||
+                         html.match(/<article[\s\S]*?<img[^>]+(?:data-src|src)=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i);
+
     const ogTitleMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
                          html.match(/<title[^>]*>([^<]+)<\/title>/i);
     const ogDescMatch = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i) ||
@@ -341,10 +389,6 @@ async function buscarContextoEnGoogleNews(consulta) {
   }
 }
 
-// ============================================================================
-// MONITOR DE PORTALES (LECTURA DE RSS DIRECTOS + GOOGLE NEWS EN PARALELO)
-// ============================================================================
-
 async function leerUnFeedRss(fuente) {
   try {
     const resp = await fetch(fuente.url, {
@@ -362,9 +406,13 @@ async function leerUnFeedRss(fuente) {
       const linkMatch = itemXml.match(/<link[^>]*>([\s\S]*?)<\/link>/i);
       const sourceMatch = itemXml.match(/<source[^>]*>([\s\S]*?)<\/source>/i);
       const descMatch = itemXml.match(/<description[^>]*>([\s\S]*?)<\/description>/i);
+      const contentMatch = itemXml.match(/<content:encoded[^>]*>([\s\S]*?)<\/content:encoded>/i);
+
       const imgMatch = itemXml.match(/<enclosure[^>]+url=["']([^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i) ||
                        itemXml.match(/<media:content[^>]+url=["']([^"']+)["']/i) ||
-                       itemXml.match(/<img[^>]+src=["']([^"']+)["']/i);
+                       itemXml.match(/<media:thumbnail[^>]+url=["']([^"']+)["']/i) ||
+                       itemXml.match(/<img[^>]+src=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i) ||
+                       (contentMatch && contentMatch[1].match(/<img[^>]+src=["'](https?:\/\/[^"']+)["']/i));
 
       const titulo = (tituloMatch ? tituloMatch[1] : '')
         .replace(/<!\[CDATA\[|\]\]>/g, '')
@@ -378,12 +426,13 @@ async function leerUnFeedRss(fuente) {
         .replace(/<!\[CDATA\[|\]\]>/g, '')
         .trim();
 
-      const bajadaRss = (descMatch ? descMatch[1] : '')
+      const textoRssBruto = (descMatch ? descMatch[1] : '') + ' ' + (contentMatch ? contentMatch[1] : '');
+      const bajadaRss = textoRssBruto
         .replace(/<!\[CDATA\[|\]\]>/g, '')
         .replace(/<[^>]+>/g, ' ')
         .replace(/\s{2,}/g, ' ')
         .trim()
-        .slice(0, 280);
+        .slice(0, 500);
 
       const medio = sourceMatch
         ? sourceMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim()
@@ -458,49 +507,70 @@ async function obtenerDatosClimaCaleta() {
   };
 }
 
-function optimizarFotoConCloudinary(fotoUrl, expandir = false, alto = 1080) {
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
-  if (!cloudName || !fotoUrl || fotoUrl.includes('res.cloudinary.com')) return fotoUrl;
-
-  const hFinal = alto === 1920 ? 2560 : 1440;
-  if (expandir) {
-    return `https://res.cloudinary.com/${cloudName}/image/fetch/c_pad,w_1440,h_${hFinal},b_gen_fill,e_improve,e_sharpen:80,f_png,q_100/${encodeURIComponent(fotoUrl)}`;
-  }
-  return `https://res.cloudinary.com/${cloudName}/image/fetch/c_fill,g_auto:faces,w_1440,h_${hFinal},e_improve,e_sharpen:80,f_png,q_100/${encodeURIComponent(fotoUrl)}`;
-}
-
 function construirUrlPollinationsHD(prompt) {
   const seed = Math.floor(Math.random() * 999999);
-  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1280&height=1280&model=turbo&nologo=true&seed=${seed}`;
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1080&height=1080&nologo=true&seed=${seed}`;
 }
 
-async function descargarYValidarImagen(url) {
-  if (!url || !url.startsWith('http')) return null;
+// Descarga la imagen en Node.js y devuelve un Data URL Base64 listo para que Puppeteer nunca muestre fondo negro
+async function descargarYValidarImagen(url, timeoutMs = 5500) {
+  if (!url) return null;
+  if (url.startsWith('data:image/')) return { url, dataUrl: url };
+  if (!url.startsWith('http')) return null;
   if (/logo|favicon|avatar|placeholder|default|icon|sprite|blank|1x1|banner-site/i.test(url)) {
     return null;
   }
   try {
     const resp = await fetch(url, {
       redirect: 'follow',
-      signal: AbortSignal.timeout(4000),
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+      }
     });
     if (!resp.ok) return null;
 
-    const contentType = resp.headers.get('content-type') || '';
+    const contentType = (resp.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
     if (!contentType.startsWith('image/') || contentType.includes('svg')) return null;
 
     const buffer = Buffer.from(await resp.arrayBuffer());
-    if (buffer.length < 15000 || buffer.length > 8 * 1024 * 1024) return null;
+    if (buffer.length < 10000 || buffer.length > 9 * 1024 * 1024) return null;
 
-    return { url, bytes: buffer.length };
+    return {
+      url,
+      dataUrl: `data:${contentType};base64,${buffer.toString('base64')}`,
+      bytes: buffer.length
+    };
   } catch (e) {
     return null;
   }
 }
 
 async function buscarFotoRealEnWeb(consulta) {
-  if (!consulta || consulta.trim().length < 3) return '';
+  if (!consulta || consulta.trim().length < 3) return null;
+
+  // 1. Búsqueda rápida en Bing Imágenes (sin token bloqueante)
+  try {
+    const bingUrl = `https://www.bing.com/images/async?q=${encodeURIComponent(consulta + ' Argentina')}&first=0&count=8&mmasync=1`;
+    const resp = await fetch(bingUrl, {
+      signal: AbortSignal.timeout(4500),
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    const html = await resp.text();
+    const urls = [...html.matchAll(/murl&quot;:&quot;(https?:\/\/[^&"]+)&quot;/gi)]
+      .map(m => m[1])
+      .filter(u => /\.(?:jpg|jpeg|png|webp)(?:\?|$)/i.test(u))
+      .slice(0, 4);
+
+    if (urls.length > 0) {
+      const validaciones = await Promise.all(urls.map(u => descargarYValidarImagen(u, 4000)));
+      const encontrada = validaciones.find(Boolean);
+      if (encontrada) return encontrada;
+    }
+  } catch (e) {}
+
+  // 2. Respaldo en DuckDuckGo Images
   try {
     const initResp = await fetch(`https://duckduckgo.com/?q=${encodeURIComponent(consulta)}&iax=images&ia=images`, {
       signal: AbortSignal.timeout(4000),
@@ -520,15 +590,16 @@ async function buscarFotoRealEnWeb(consulta) {
       });
       const imgData = await imgResp.json();
       const candidatas = (imgData.results || [])
-        .filter(r => (r.width || 0) >= 700 && (r.height || 0) >= 450)
-        .slice(0, 3);
+        .filter(r => (r.width || 0) >= 650 && (r.height || 0) >= 400)
+        .slice(0, 4);
 
-      const resultados = await Promise.all(candidatas.map(c => descargarYValidarImagen(c.image)));
+      const resultados = await Promise.all(candidatas.map(c => descargarYValidarImagen(c.image, 4000)));
       const primeraValida = resultados.find(Boolean);
-      if (primeraValida) return primeraValida.url;
+      if (primeraValida) return primeraValida;
     }
   } catch (e) {}
-  return '';
+
+  return null;
 }
 
 async function auditarYResolverImagen({
@@ -539,29 +610,51 @@ async function auditarYResolverImagen({
   promptIaSugerido,
   forzarBusquedaNueva = false
 }) {
-  if (fotoCandidataUrl && esFotoManualDelEditor && !forzarBusquedaNueva) {
-    return { urlFinal: fotoCandidataUrl, fuenteAuto: 'GENTILEZA / ARCHIVO' };
-  }
-
   if (fotoCandidataUrl && !forzarBusquedaNueva) {
-    const validada = await descargarYValidarImagen(fotoCandidataUrl);
+    const validada = await descargarYValidarImagen(fotoCandidataUrl, 5500);
     if (validada) {
-      return { urlFinal: fotoCandidataUrl, fuenteAuto: '' };
+      return {
+        urlFinal: validada.dataUrl,
+        urlOriginal: validada.url,
+        fuenteAuto: esFotoManualDelEditor ? 'GENTILEZA / ARCHIVO' : ''
+      };
     }
   }
 
-  const queryWeb = busquedaWebSugerida || titulo;
-  const fotoWebEncontrada = await buscarFotoRealEnWeb(queryWeb);
-  if (fotoWebEncontrada && fotoWebEncontrada !== fotoCandidataUrl) {
-    return { urlFinal: fotoWebEncontrada, fuenteAuto: 'ARCHIVO / PRENSA' };
+  const queryWeb = busquedaWebSugerida || `${titulo} Santa Cruz Argentina`;
+  const fotoWeb = await buscarFotoRealEnWeb(queryWeb);
+  if (fotoWeb) {
+    return {
+      urlFinal: fotoWeb.dataUrl,
+      urlOriginal: fotoWeb.url,
+      fuenteAuto: 'ARCHIVO / PRENSA'
+    };
   }
 
-  const fotoIA = construirUrlPollinationsHD(promptIaSugerido || 'Argentina Patagonia journalism news photography');
-  return { urlFinal: fotoIA, fuenteAuto: 'ILUSTRACIÓN IA' };
+  const urlIa = construirUrlPollinationsHD(promptIaSugerido || 'Patagonia Argentina coastal city journalism news photography');
+  const validadaIa = await descargarYValidarImagen(urlIa, 9000);
+  if (validadaIa) {
+    return {
+      urlFinal: validadaIa.dataUrl,
+      urlOriginal: urlIa,
+      fuenteAuto: 'ILUSTRACIÓN IA'
+    };
+  }
+
+  const fallbackPatagonia = await buscarFotoRealEnWeb('Caleta Olivia Santa Cruz Patagonia');
+  if (fallbackPatagonia) {
+    return {
+      urlFinal: fallbackPatagonia.dataUrl,
+      urlOriginal: fallbackPatagonia.url,
+      fuenteAuto: 'ARCHIVO'
+    };
+  }
+
+  return { urlFinal: urlIa, urlOriginal: urlIa, fuenteAuto: 'ARCHIVO' };
 }
 
 // ============================================================================
-// CEREBRO EDITORIAL EN CASTELLANO PURO (OPTIMIZADO BAJO CONSUMO DE TOKENS)
+// CEREBRO EDITORIAL EN CASTELLANO PURO (CON BAJADA COMPLETA DE 18-24 PALABRAS)
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
@@ -577,28 +670,31 @@ VOZ PERIODÍSTICA ("CON CARÁCTER, CERO HUMO"):
 - En conflictos o cortes de Ruta 3, conectá causa, lugar, horarios y consecuencia real sin dramatizar.
 - En espectáculos, andá directo al cruce o primicia confirmada sin insultos y cerrá con pregunta de debate.
 
-REGLAS DE DISEÑO Y EMOJIS:
+REGLAS ESTRICTAS DE DISEÑO Y LONGITUD EN LA PLACA:
 - CERO emojis y CERO banderas en "categoria", "titulo", "destacar" y "bajada".
-- En "copy" prohibido usar números como "1)" o etiquetas como "Línea 1:". Usá 2 emojis en el encabezado y 👇 al final, SOLO de esta lista segura para Facebook: 🚨 🔴 🟠 🟡 🚧 🚔 🚒 🚑 🛑 💨 🌀 🌊 💧 ☔ ⛄ ⛅ ⚡ 🔥 💰 💵 📈 📉 📊 ⛽ 🏭 🚜 🚛 🚢 🐟 📢 📣 📰 📋 📄 📜 🏥 🏫 🎓 👷 🤝 📍 📅 🕒 ⚽ 🏆 🏅 🎭 🎶 👇 👉 📲 💬 ✅ ❌
-- "titulo" de 4 a 7 palabras y "bajada" de 10 a 13 palabras equilibradas (sin palabra o número colgado al final).
+- "categoria": Formato "SECCIÓN / SUBTEMA" en MAYÚSCULAS (ej. "CALETA OLIVIA / PUERTO", "SANTA CRUZ / ENERGÍA", "ECONOMÍA / NACIÓN").
+- "titulo": EN MAYÚSCULAS SIN EMOJIS, de 5 a 8 palabras contundentes.
+- "destacar": 2 a 4 palabras EXACTAS Y EN MAYÚSCULAS que aparezcan dentro de "titulo" para resaltarlas en color.
+- "bajada" (SUBTÍTULO DE LA PLACA): OBLIGATORIO que tenga entre 18 y 24 palabras (entre 125 y 165 caracteres). Debe ser un subtítulo periodístico completo, informativo y con contexto que llene 2 a 3 líneas completas en la placa (PROHIBIDO hacer subtítulos cortos de menos de 16 palabras).
+- En "copy": Prohibido usar números como "1)" o etiquetas. Usá 2 emojis en el encabezado y 👇 al final, SOLO de esta lista segura para Facebook: 🚨 🔴 🟠 🟡 🚧 🚔 🚒 🚑 🛑 💨 🌀 🌊 💧 ☔ ⛄ ⛅ ⚡ 🔥 💰 💵 📈 📉 📊 ⛽ 🏭 🚜 🚛 🚢 🐟 📢 📣 📰 📋 📄 📜 🏥 🏫 🎓 👷 🤝 📍 📅 🕒 ⚽ 🏆 🏅 🎭 🎶 👇 👉 📲 💬 ✅ ❌
 
 Devolvé ÚNICAMENTE este JSON:
 {
   "descartar": false,
   "categoria": "SECCIÓN / SUBTEMA EN MAYÚSCULAS SIN EMOJIS",
-  "titulo": "TITULAR EN MAYÚSCULAS SIN EMOJIS (4 a 7 palabras)",
-  "destacar": "2 a 4 palabras exactas del titulo",
-  "bajada": "Oración informativa en castellano SIN EMOJIS (10 a 13 palabras)",
+  "titulo": "TITULAR EN MAYÚSCULAS SIN EMOJIS (5 a 8 palabras)",
+  "destacar": "PALABRAS EXACTAS EN MAYÚSCULAS DEL TITULO",
+  "bajada": "Subtítulo periodístico completo y detallado en castellano SIN EMOJIS, de entre 18 y 24 palabras (125 a 165 caracteres), explicando el hecho y sus detalles principales.",
   "dato_clave": "Cifra central si existe, o vacío",
   "autor_cita": "Nombre y cargo si hay cita, o vacío",
   "fuente_credito": "Crédito corto en MAYÚSCULAS",
   "copy": "Texto plano en castellano separado por \\n\\n: encabezado en MAYÚSCULAS con 2 emojis seguros; luego 2 a 3 párrafos con datos verificados, contexto y consecuencia real; luego cierre invitando a seguir @elregistrosur con pregunta o llamado a compartir terminado en 👇; luego ---; luego 6 a 8 hashtags en minúsculas (#noticias #elregistrosur #caletaolivia #santacruz).",
   "slides_carrusel": [
-    { "titulo": "TITULAR PORTADA", "destacar": "PALABRA", "bajada": "Síntesis gancho" },
-    { "titulo": "ANTECEDENTES Y DATOS", "destacar": "DATOS", "bajada": "Contexto y cifras" },
-    { "titulo": "QUÉ CAMBIA AHORA", "destacar": "AHORA", "bajada": "Consecuencia directa" }
+    { "titulo": "TITULAR PORTADA", "destacar": "PORTADA", "bajada": "Subtítulo completo de 18 a 22 palabras explicando el hecho principal de la jornada." },
+    { "titulo": "ANTECEDENTES Y DATOS", "destacar": "DATOS", "bajada": "Subtítulo completo de 18 a 22 palabras detallando las cifras y el contexto confirmado." },
+    { "titulo": "QUÉ CAMBIA EN LA REGIÓN", "destacar": "REGIÓN", "bajada": "Subtítulo completo de 18 a 22 palabras sobre el impacto directo en la comunidad." }
   ],
-  "busqueda_foto_web": "3 a 5 palabras clave para buscar foto real",
+  "busqueda_foto_web": "3 a 5 palabras clave en castellano para buscar foto real de prensa",
   "prompt_imagen_ia": "Photorealistic editorial news photography prompt in English (16 words, no text)"
 }`;
 
@@ -609,36 +705,48 @@ Devolvé ÚNICAMENTE este JSON:
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
         copy: String(ultimoEstado.copy || '').slice(0, 700)
-      })}\n\nCambio pedido: "${textoRecortado}". Devolvé JSON en castellano.`
-    : `Noticia:\n"${textoRecortado}"\n${contextoRecortado}\nRedactá en castellano de Argentina en JSON.`;
+      })}\n\nCambio pedido: "${textoRecortado}". Devolvé JSON en castellano con bajada de 18 a 24 palabras.`
+    : `Noticia:\n"${textoRecortado}"\n${contextoRecortado}\nRedactá en castellano de Argentina en JSON con bajada completa de 18 a 24 palabras.`;
 
   const parsed = await llamarGroqChat([
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userMessage }
   ]);
 
-  parsed.categoria = limpiarEmojis(parsed.categoria);
-  parsed.titulo = limpiarEmojis(parsed.titulo);
-  parsed.destacar = limpiarEmojis(parsed.destacar);
-  parsed.bajada = limpiarEmojis(parsed.bajada);
+  let cat = limpiarEmojis(parsed.categoria).toUpperCase();
+  if (!cat.includes('/')) {
+    cat = cat ? `CALETA OLIVIA / ${cat}` : 'SANTA CRUZ / ACTUALIDAD';
+  }
+  parsed.categoria = cat;
+
+  const titDes = asegurarDestacadoEnTitulo(parsed.titulo, parsed.destacar);
+  parsed.titulo = titDes.titulo;
+  parsed.destacar = titDes.destacar;
   parsed.copy = filtrarEmojisSegurosRedes(parsed.copy);
+  parsed.bajada = asegurarBajadaCompleta(parsed.bajada, parsed.copy);
 
   if (Array.isArray(parsed.slides_carrusel)) {
-    parsed.slides_carrusel = parsed.slides_carrusel.map(s => ({
-      titulo: limpiarEmojis(s.titulo),
-      destacar: limpiarEmojis(s.destacar),
-      bajada: limpiarEmojis(s.bajada)
-    }));
+    parsed.slides_carrusel = parsed.slides_carrusel.map(s => {
+      const td = asegurarDestacadoEnTitulo(s.titulo, s.destacar);
+      return {
+        titulo: td.titulo,
+        destacar: td.destacar,
+        bajada: asegurarBajadaCompleta(s.bajada, parsed.copy)
+      };
+    });
   }
 
   return parsed;
 }
 
 // ============================================================================
-// MOTOR GRÁFICO 2K RETINA + EQUILIBRIO TIPOGRÁFICO + MARCA DE AGUA
+// MOTOR GRÁFICO 2K RETINA + CARGA GARANTIZADA DE IMAGEN + EQUILIBRIO DE LÍNEAS
 // ============================================================================
 
 async function estamparMarcaDeAguaFoto(fotoUrl, textoCredito = 'EXCLUSIVO') {
+  const validada = await descargarYValidarImagen(fotoUrl, 7000);
+  const srcSeguro = validada ? validada.dataUrl : fotoUrl;
+
   const browser = await puppeteer.launch({
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-web-security']
@@ -678,8 +786,8 @@ async function estamparMarcaDeAguaFoto(fotoUrl, textoCredito = 'EXCLUSIVO') {
     </head>
     <body>
       <div id="wrap">
-        <img id="bg-blur" src="${fotoUrl}" />
-        <img id="main-img" src="${fotoUrl}" />
+        <img id="bg-blur" src="${srcSeguro}" />
+        <img id="main-img" src="${srcSeguro}" />
         <div id="watermark-center">EL REGISTRO SUR</div>
         <div id="badge-bottom">
           <span id="brand">EL REGISTRO SUR</span>
@@ -689,14 +797,7 @@ async function estamparMarcaDeAguaFoto(fotoUrl, textoCredito = 'EXCLUSIVO') {
     </body>
     </html>`;
 
-    await page.setContent(htmlMarca, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await page.evaluate(async () => {
-      const imgs = Array.from(document.querySelectorAll('img'));
-      await Promise.race([
-        Promise.all(imgs.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = res; img.onerror = res; }))),
-        new Promise(res => setTimeout(res, 7500))
-      ]);
-    });
+    await page.setContent(htmlMarca, { waitUntil: 'networkidle0', timeout: 15000 });
     const el = await page.$('#wrap');
     return await el.screenshot({ type: 'png' });
   } finally {
@@ -719,6 +820,18 @@ async function renderizarFlyer({
   modoVisual = 'estandar',
   numeroSlide = ''
 }) {
+  // Asegura que la imagen esté en Base64 en memoria antes de abrir Puppeteer
+  let fotoSegura = fotoFinalUrl;
+  if (fotoFinalUrl && !fotoFinalUrl.startsWith('data:image/')) {
+    const descargada = await descargarYValidarImagen(fotoFinalUrl, 6500);
+    if (descargada) {
+      fotoSegura = descargada.dataUrl;
+    } else {
+      const respaldoWeb = await buscarFotoRealEnWeb(titulo || 'Caleta Olivia Santa Cruz');
+      if (respaldoWeb) fotoSegura = respaldoWeb.dataUrl;
+    }
+  }
+
   const alto = esHistoria ? 1920 : 1080;
   const browser = await puppeteer.launch({
     headless: 'new',
@@ -729,9 +842,8 @@ async function renderizarFlyer({
     const page = await browser.newPage();
     await page.setViewport({ width: 1080, height: alto, deviceScaleFactor: 2 });
 
-    const catLimpia = limpiarEmojis(categoria);
-    const titLimpio = limpiarEmojis(titulo);
-    const desLimpio = limpiarEmojis(destacar);
+    const catLimpia = limpiarEmojis(categoria).toUpperCase();
+    const { titulo: titLimpio, destacar: desLimpio } = asegurarDestacadoEnTitulo(titulo, destacar);
     const bajLimpia = limpiarEmojis(bajada);
 
     let htmlModificado = templateHtml
@@ -740,24 +852,13 @@ async function renderizarFlyer({
       .replace('El máximo tribunal revocó la sentencia que frenaba el artículo 154 del DNU 70/23 al determinar que los excombatientes de Malvinas carecen de legitimación para demandar.', () => bajLimpia.replace(/"/g, '&quot;'))
       .replace('POLÍTICA', () => catLimpia.replace(/"/g, '&quot;'));
 
-    if (fotoFinalUrl) {
-      htmlModificado = htmlModificado.replace(/https:\/\/images\.unsplash\.com\/[^"'\s)]+/g, () => fotoFinalUrl);
+    if (fotoSegura) {
+      htmlModificado = htmlModificado.replace(/https:\/\/images\.unsplash\.com\/[^"'\s)]+/g, () => fotoSegura);
     }
 
-    await page.setContent(htmlModificado, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.setContent(htmlModificado, { waitUntil: 'networkidle0', timeout: 15000 });
 
-    await page.evaluate(async () => {
-      if (document.fonts && document.fonts.ready) {
-        await Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 2500))]);
-      }
-      const imgs = Array.from(document.querySelectorAll('img'));
-      await Promise.race([
-        Promise.all(imgs.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = res; img.onerror = res; }))),
-        new Promise(res => setTimeout(res, 7500))
-      ]);
-    });
-
-    await page.evaluate(({
+    await page.evaluate(async ({
       url,
       expandir,
       modoUrgente,
@@ -823,19 +924,24 @@ async function renderizarFlyer({
           const anchoPrimera = lineas[0].right - lineas[0].left;
           const anchoUltima = lineas[lineas.length - 1].right - lineas[lineas.length - 1].left;
 
-          if (anchoUltima >= anchoPrimera * 0.42) break;
+          if (anchoUltima >= anchoPrimera * 0.45) break;
 
           const wActual = el.getBoundingClientRect().width;
-          el.style.maxWidth = `${Math.max(380, wActual - 45)}px`;
+          el.style.maxWidth = `${Math.max(420, wActual - 40)}px`;
         }
       }
 
+      // Fuerza la carga de la foto tanto en etiquetas <img> de fondo como en contenedores con background-image CSS
       let fotoPrincipal = null;
       const imgs = canvas.querySelectorAll('img');
-      imgs.forEach(img => {
+      for (const img of imgs) {
         img.style.imageRendering = '-webkit-optimize-contrast';
-        if (img.src.includes('unsplash') || img.id.includes('bg') || img.className.includes('bg') || img.width > 400) {
-          if (url) img.src = url;
+        const rect = img.getBoundingClientRect();
+        if (img.src.includes('unsplash') || img.id.includes('bg') || img.className.includes('bg') || rect.width > 300 || img.width > 300) {
+          if (url && img.src !== url) {
+            img.src = url;
+            try { await img.decode(); } catch (e) {}
+          }
           fotoPrincipal = img;
           if (expandir && url) {
             img.style.objectFit = 'contain';
@@ -845,7 +951,16 @@ async function renderizarFlyer({
             img.parentElement.style.backdropFilter = 'blur(28px)';
           }
         }
-      });
+      }
+
+      if (url) {
+        canvas.querySelectorAll('*').forEach(el => {
+          const bg = window.getComputedStyle(el).backgroundImage;
+          if (bg && bg !== 'none' && (bg.includes('unsplash') || bg.includes('http') || bg.includes('data:image'))) {
+            el.style.backgroundImage = `url("${url}")`;
+          }
+        });
+      }
 
       let esFotoClara = false;
       if (fotoPrincipal && fotoPrincipal.complete && fotoPrincipal.naturalWidth > 0) {
@@ -960,7 +1075,7 @@ async function renderizarFlyer({
         }
       });
     }, {
-      url: fotoFinalUrl,
+      url: fotoSegura,
       expandir: expandirSinCloudinary,
       modoUrgente: esUrgente,
       modoHistoria: esHistoria,
@@ -975,7 +1090,7 @@ async function renderizarFlyer({
       numeroSlide
     });
 
-    await new Promise(r => setTimeout(r, 350));
+    await new Promise(r => setTimeout(r, 300));
     const canvasElement = await page.$('#canvas');
     return await canvasElement.screenshot({ type: 'png' });
   } finally {
@@ -995,10 +1110,6 @@ async function enviarFotoConBotonesTelegram(imageBuffer, captionTexto) {
     body: form
   });
 }
-
-// ============================================================================
-// FLUJOS AUTOMÁTICOS: RADAR DE 21 MEDIOS, RUTA 3, CLIMA Y RESUMEN DIARIO
-// ============================================================================
 
 async function generarDatosRadar(forzar = false) {
   const candidatas = await obtenerTodasLasCandidatasRadar();
@@ -1022,7 +1133,7 @@ async function generarDatosRadar(forzar = false) {
   const noticiaIA = await procesarNoticiaConIA(textoCompleto, contexto || 'Noticia verificada en portal oficial.', false);
 
   const fotoInicial = extraido.fotoExtraida || elegida.fotoRss || '';
-  const { urlFinal, fuenteAuto } = await auditarYResolverImagen({
+  const { urlFinal, urlOriginal, fuenteAuto } = await auditarYResolverImagen({
     fotoCandidataUrl: fotoInicial,
     esFotoManualDelEditor: false,
     titulo: noticiaIA.titulo,
@@ -1030,8 +1141,6 @@ async function generarDatosRadar(forzar = false) {
     promptIaSugerido: noticiaIA.prompt_imagen_ia
   });
 
-  const esEspectaculo = elegida.categoriaOrigen === 'espectaculos';
-  const fotoOptimizada = optimizarFotoConCloudinary(urlFinal, false, 1080);
   const fuenteFinal = fuenteAuto || elegida.medio.toUpperCase() || noticiaIA.fuente_credito || 'PRENSA';
 
   const imageBuffer = await renderizarFlyer({
@@ -1042,16 +1151,16 @@ async function generarDatosRadar(forzar = false) {
     datoClave: noticiaIA.dato_clave,
     autorCita: noticiaIA.autor_cita,
     fuenteCredito: fuenteFinal,
-    fotoFinalUrl: fotoOptimizada,
+    fotoFinalUrl: urlFinal,
     expandirSinCloudinary: false,
-    esUrgente: !esEspectaculo,
+    esUrgente: false,
     esHistoria: false,
     modoVisual: 'estandar'
   });
 
   guardarEnColaBorradores({
-    foto_url: fotoOptimizada,
-    foto_original_url: urlFinal,
+    foto_url: urlFinal,
+    foto_original_url: urlOriginal || urlFinal,
     categoria: noticiaIA.categoria,
     titulo: noticiaIA.titulo,
     destacar: noticiaIA.destacar,
@@ -1063,7 +1172,7 @@ async function generarDatosRadar(forzar = false) {
     prompt_imagen_ia: noticiaIA.prompt_imagen_ia || 'Argentina Patagonia news journalism',
     fill_mode: 'cover',
     modo_visual: 'estandar',
-    urgente: !esEspectaculo,
+    urgente: false,
     imagen_buffer: imageBuffer,
     historia_buffer: null,
     carrusel_buffers: []
@@ -1090,7 +1199,7 @@ async function ejecutarAlertaRuta3YServicios() {
 
   const noticiaIA = await procesarNoticiaConIA(`ALERTA VIAL / SERVICIOS ZONA NORTE: ${elegida.titulo}\n${extraido.textoExtraido}`, contexto || 'Reporte vial y de servicios.', false);
 
-  const { urlFinal, fuenteAuto } = await auditarYResolverImagen({
+  const { urlFinal, urlOriginal, fuenteAuto } = await auditarYResolverImagen({
     fotoCandidataUrl: extraido.fotoExtraida || elegida.fotoRss,
     esFotoManualDelEditor: false,
     titulo: noticiaIA.titulo,
@@ -1098,14 +1207,13 @@ async function ejecutarAlertaRuta3YServicios() {
     promptIaSugerido: 'Patagonia Argentina coastal highway Ruta 3 traffic alert news photography'
   });
 
-  const fotoOptimizada = optimizarFotoConCloudinary(urlFinal, false, 1080);
   const imageBuffer = await renderizarFlyer({
     categoria: 'ZONA NORTE / ALERTA',
     titulo: noticiaIA.titulo,
     destacar: noticiaIA.destacar,
     bajada: noticiaIA.bajada,
     fuenteCredito: fuenteAuto || 'VIALIDAD / SERVICIOS',
-    fotoFinalUrl: fotoOptimizada,
+    fotoFinalUrl: urlFinal,
     expandirSinCloudinary: false,
     esUrgente: true,
     esHistoria: false,
@@ -1113,8 +1221,8 @@ async function ejecutarAlertaRuta3YServicios() {
   });
 
   guardarEnColaBorradores({
-    foto_url: fotoOptimizada,
-    foto_original_url: urlFinal,
+    foto_url: urlFinal,
+    foto_original_url: urlOriginal || urlFinal,
     categoria: 'ZONA NORTE / ALERTA',
     titulo: noticiaIA.titulo,
     destacar: noticiaIA.destacar,
@@ -1149,7 +1257,7 @@ A partir de los hechos confirmados de hoy en Argentina y Santa Cruz, armá el RE
 
 REGLAS ESTRICTAS:
 - PROHIBIDO emojis o banderas en los títulos y bajadas de las placas.
-- Titulares cortos (4 a 7 palabras) y bajadas equilibradas (10 a 13 palabras) sin palabras sueltas abajo.
+- Titulares de 5 a 8 palabras en MAYÚSCULAS y bajadas completas de 18 a 24 palabras (125 a 160 caracteres) para llenar 2 a 3 líneas completas.
 - En "copy", usá texto 100% plano en castellano sin números como 1), con emojis seguros de Facebook (🚨, 📰, 📍, 👇) y hashtags en minúsculas.
 
 Titulares del día:
@@ -1158,25 +1266,32 @@ ${titulares}
 Devolvé ÚNICAMENTE este JSON:
 {
   "slides": [
-    { "titulo": "LO QUE PASÓ HOY EN EL SUR", "destacar": "HOY EN EL SUR", "bajada": "Los cuatro temas que marcaron la jornada en la región y el país" },
-    { "titulo": "TITULAR TEMA 1", "destacar": "PALABRA CLAVE", "bajada": "Síntesis factual en 12 palabras" },
-    { "titulo": "TITULAR TEMA 2", "destacar": "PALABRA CLAVE", "bajada": "Síntesis factual en 12 palabras" },
-    { "titulo": "TITULAR TEMA 3", "destacar": "PALABRA CLAVE", "bajada": "Síntesis factual en 12 palabras" },
-    { "titulo": "TITULAR TEMA 4", "destacar": "PALABRA CLAVE", "bajada": "Síntesis factual en 12 palabras" }
+    { "titulo": "LO QUE PASÓ HOY EN EL SUR", "destacar": "HOY EN EL SUR", "bajada": "Repaso completo por los cuatro hechos más relevantes que marcaron la jornada informativa en Caleta Olivia, Santa Cruz y el país." },
+    { "titulo": "TITULAR TEMA 1", "destacar": "PALABRA CLAVE", "bajada": "Subtítulo informativo completo de 18 a 22 palabras explicando el hecho y su impacto directo en la región." },
+    { "titulo": "TITULAR TEMA 2", "destacar": "PALABRA CLAVE", "bajada": "Subtítulo informativo completo de 18 a 22 palabras explicando el hecho y su impacto directo en la región." },
+    { "titulo": "TITULAR TEMA 3", "destacar": "PALABRA CLAVE", "bajada": "Subtítulo informativo completo de 18 a 22 palabras explicando el hecho y su impacto directo en la región." },
+    { "titulo": "TITULAR TEMA 4", "destacar": "PALABRA CLAVE", "bajada": "Subtítulo informativo completo de 18 a 22 palabras explicando el hecho y su impacto directo en la región." }
   ],
   "copy": "📰 RESUMEN DEL DÍA EN EL REGISTRO SUR 📍\\n\\nRepaso rápido con los hechos clave de hoy en Caleta Olivia, Santa Cruz y el país.\\n\\nDeslizá para ver cada tema y seguí @elregistrosur para estar informado 👇\\n\\n---\\n\\n#noticias #elregistrosur #caletaolivia #santacruz #resumendeldia #patagonia"
 }`;
 
   const parsed = await llamarGroqChat([{ role: 'user', content: promptResumen }]);
   const slides = (parsed.slides || []).slice(0, 5);
-  const fotoBase = construirUrlPollinationsHD('Caleta Olivia Patagonia Argentina dusk city coast editorial photography');
+  const { urlFinal: fotoBase } = await auditarYResolverImagen({
+    fotoCandidataUrl: '',
+    esFotoManualDelEditor: false,
+    titulo: 'Caleta Olivia Santa Cruz Patagonia',
+    busquedaWebSugerida: 'Caleta Olivia Santa Cruz costanera',
+    promptIaSugerido: 'Caleta Olivia Patagonia Argentina dusk city coast editorial photography'
+  });
 
   const buffers = [];
   for (let i = 0; i < slides.length; i++) {
+    const td = asegurarDestacadoEnTitulo(slides[i].titulo, slides[i].destacar);
     const buf = await renderizarFlyer({
-      categoria: 'RESUMEN DEL DÍA',
-      titulo: limpiarEmojis(slides[i].titulo),
-      destacar: limpiarEmojis(slides[i].destacar),
+      categoria: 'RESUMEN DEL DÍA / SANTA CRUZ',
+      titulo: td.titulo,
+      destacar: td.destacar,
       bajada: limpiarEmojis(slides[i].bajada),
       fuenteCredito: 'EL REGISTRO SUR',
       fotoFinalUrl: fotoBase,
@@ -1194,7 +1309,7 @@ Devolvé ÚNICAMENTE este JSON:
   guardarEnColaBorradores({
     foto_url: fotoBase,
     foto_original_url: fotoBase,
-    categoria: 'RESUMEN DEL DÍA',
+    categoria: 'RESUMEN DEL DÍA / SANTA CRUZ',
     titulo: limpiarEmojis(slides[0].titulo),
     destacar: limpiarEmojis(slides[0].destacar),
     bajada: limpiarEmojis(slides[0].bajada),
@@ -1208,7 +1323,7 @@ Devolvé ÚNICAMENTE este JSON:
     urgente: false,
     imagen_buffer: buffers[0],
     historia_buffer: null,
-    carrusel_buffers: []
+    carrusel_buffers: buffers
   });
 
   return { buffers, copy: copyLimpia };
@@ -1217,7 +1332,13 @@ Devolvé ÚNICAMENTE este JSON:
 async function ejecutarParteClima() {
   const clima = await obtenerDatosClimaCaleta();
   const noticiaIA = await procesarNoticiaConIA(clima.texto, 'Fuente meteorológica oficial Open-Meteo Caleta Olivia.', false);
-  const fotoClima = construirUrlPollinationsHD('Caleta Olivia Patagonia Argentina coastal city sea sky dramatic weather photography');
+  const { urlFinal: fotoClima } = await auditarYResolverImagen({
+    fotoCandidataUrl: '',
+    esFotoManualDelEditor: false,
+    titulo: 'Clima Caleta Olivia Costanera',
+    busquedaWebSugerida: 'Costanera Caleta Olivia Santa Cruz mar cielo',
+    promptIaSugerido: 'Caleta Olivia Patagonia Argentina coastal city sea sky dramatic weather photography'
+  });
 
   const imageBuffer = await renderizarFlyer({
     categoria: 'CALETA OLIVIA / CLIMA',
@@ -1255,10 +1376,6 @@ async function ejecutarParteClima() {
 
   return { imageBuffer, noticiaIA };
 }
-
-// ============================================================================
-// TAREAS PROGRAMADAS CADA 30 MINUTOS (RADAR 21 MEDIOS + RUTA 3 + CLIMA + RESUMEN)
-// ============================================================================
 
 setInterval(async () => {
   try {
@@ -1309,10 +1426,6 @@ app.get('/clima', async (req, res) => {
   res.json({ ok: true, titulo: noticiaIA.titulo });
 });
 
-// ============================================================================
-// ENDPOINT PRINCIPAL DE TELEGRAM / MAKE
-// ============================================================================
-
 app.post('/generar', async (req, res) => {
   try {
     let {
@@ -1360,7 +1473,6 @@ app.post('/generar', async (req, res) => {
 
     const replyMarkupJson = JSON.stringify(generarTecladoTactil());
 
-    // 1. DESCARTAR BORRADOR ACTUAL Y RECUPERAR EL ANTERIOR EN COLA
     if (comando === 'descartar') {
       const descartadoTitulo = ultimoEstado.titulo || 'Borrador';
       if (colaBorradores.length > 0) {
@@ -1374,14 +1486,12 @@ app.post('/generar', async (req, res) => {
       return res.json({ ok: true, descartado: true, imagen_base64: '' });
     }
 
-    // 2. AYUDA / COMANDOS
     if (comando === 'comandos' || comando === 'ayuda') {
       const textoAyuda = `🤖 COMANDOS DE EL REGISTRO SUR:\n\n.radar → Busca la noticia más importante o viral en tus 21 portales\n.ruta3 → Revisa estado de Ruta Nacional N° 3 y servicios\n.resumen → Arma carrusel de 5 placas con lo más importante del día\n.marca [crédito] → Estampa marca de agua de El Registro Sur en fotos de vecinos\n.clima → Parte meteorológico de Caleta Olivia\n.urgente / .normal → Cambia el color de alerta\n.cita / .dato / .carrusel / .historia → Formatos especiales\n.expandir / .auditar / .ia [tema] → Ajustes de imagen\n.editar [cambio] → Corrige textos del borrador actual\n.descartar → Descarta la placa actual\n.publicar → Sube a Facebook e Instagram`;
       await enviarMensajeTelegram(textoAyuda);
       return res.json({ ok: true, descartado: true, imagen_base64: '' });
     }
 
-    // 3. MARCA DE AGUA PARA FOTOS DE VECINOS (.marca)
     if (comando === 'marca') {
       const fotoOrigen = nuevaFotoTelegram || ultimoEstado.foto_original_url;
       if (!fotoOrigen) throw new Error('Enviá una foto junto con .marca para estampar el logo de El Registro Sur.');
@@ -1420,7 +1530,6 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // 4. RADAR EN VIVO SOBRE LOS 21 MEDIOS (.radar)
     if (comando === 'radar' || comando === 'comandoradar') {
       const radar = await generarDatosRadar(true);
       if (!radar) {
@@ -1440,7 +1549,6 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // 5. ALERTA RUTA 3 Y SERVICIOS (.ruta3)
     if (comando === 'ruta3' || comando === 'ruta') {
       const alertaVial = await ejecutarAlertaRuta3YServicios();
       if (!alertaVial) {
@@ -1460,7 +1568,6 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // 6. RESUMEN DIARIO EN CARRUSEL (.resumen)
     if (comando === 'resumen') {
       const resumen = await ejecutarResumenDiarioCarrusel();
       for (let i = 1; i < resumen.buffers.length; i++) {
@@ -1481,7 +1588,6 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // 7. CLIMA (.clima)
     if (comando === 'clima' || comando === 'comandoclima') {
       await ejecutarParteClima();
       return res.json({
@@ -1497,7 +1603,6 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // 8. MODOS ESPECIALES (.cita / .dato)
     if ((comando === 'cita' || comando === 'dato') && ultimoEstado.titulo) {
       const imageBuffer = await renderizarFlyer({
         categoria: ultimoEstado.categoria,
@@ -1529,15 +1634,14 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // 9. CARRUSEL 3x (.carrusel)
     if (comando === 'carrusel' && ultimoEstado.titulo) {
       const noticiaIA = await procesarNoticiaConIA(`Generá el carrusel de 3 placas para esta noticia: ${ultimoEstado.titulo}. ${ultimoEstado.copy}`, 'Borrador ya verificado.', true);
       const slides = (noticiaIA.slides_carrusel && noticiaIA.slides_carrusel.length >= 3)
         ? noticiaIA.slides_carrusel.slice(0, 3)
         : [
             { titulo: ultimoEstado.titulo, destacar: ultimoEstado.destacar, bajada: ultimoEstado.bajada },
-            { titulo: 'EL CONTEXTO Y LOS DATOS', destacar: 'LOS DATOS', bajada: ultimoEstado.bajada },
-            { titulo: 'IMPACTO EN SANTA CRUZ', destacar: 'SANTA CRUZ', bajada: 'Seguí toda la cobertura en @elregistrosur' }
+            { titulo: 'EL CONTEXTO Y LOS DATOS CLAVE', destacar: 'DATOS CLAVE', bajada: ultimoEstado.bajada },
+            { titulo: 'IMPACTO DIRECTO EN SANTA CRUZ', destacar: 'SANTA CRUZ', bajada: ultimoEstado.bajada }
           ];
 
       const buffers = [];
@@ -1585,10 +1689,9 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // 10. AUDITORÍA MANUAL DE FOTO (.auditar)
     if ((comando === 'auditar' || comando === 'comandoauditar') && ultimoEstado.titulo) {
-      const { urlFinal, fuenteAuto } = await auditarYResolverImagen({
-        fotoCandidataUrl: ultimoEstado.foto_original_url,
+      const { urlFinal, urlOriginal, fuenteAuto } = await auditarYResolverImagen({
+        fotoCandidataUrl: '',
         esFotoManualDelEditor: false,
         titulo: ultimoEstado.titulo,
         busquedaWebSugerida: ultimoEstado.titulo,
@@ -1596,7 +1699,6 @@ app.post('/generar', async (req, res) => {
         forzarBusquedaNueva: true
       });
 
-      const fotoOptimizada = optimizarFotoConCloudinary(urlFinal, false, 1080);
       const fuenteFinal = fuenteAuto || ultimoEstado.fuente_credito;
 
       const imageBuffer = await renderizarFlyer({
@@ -1607,15 +1709,15 @@ app.post('/generar', async (req, res) => {
         datoClave: ultimoEstado.dato_clave,
         autorCita: ultimoEstado.autor_cita,
         fuenteCredito: fuenteFinal,
-        fotoFinalUrl: fotoOptimizada,
+        fotoFinalUrl: urlFinal,
         expandirSinCloudinary: false,
         esUrgente: ultimoEstado.urgente,
         esHistoria: false,
         modoVisual: ultimoEstado.modo_visual
       });
 
-      ultimoEstado.foto_url = fotoOptimizada;
-      ultimoEstado.foto_original_url = urlFinal;
+      ultimoEstado.foto_url = urlFinal;
+      ultimoEstado.foto_original_url = urlOriginal || urlFinal;
       ultimoEstado.fuente_credito = fuenteFinal;
       ultimoEstado.imagen_buffer = imageBuffer;
 
@@ -1632,7 +1734,6 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // 11. HISTORIA VERTICAL 9:16 (.historia)
     if ((comando === 'historia' || comando === 'comandohistoria') && ultimoEstado.titulo) {
       const historiaBuffer = await renderizarFlyer({
         categoria: ultimoEstado.categoria,
@@ -1643,7 +1744,7 @@ app.post('/generar', async (req, res) => {
         autorCita: ultimoEstado.autor_cita,
         fuenteCredito: ultimoEstado.fuente_credito,
         fotoFinalUrl: ultimoEstado.foto_url,
-        expandirSinCloudinary: ultimoEstado.fill_mode === 'contain' && !process.env.CLOUDINARY_CLOUD_NAME,
+        expandirSinCloudinary: ultimoEstado.fill_mode === 'contain',
         esUrgente: ultimoEstado.urgente,
         esHistoria: true,
         modoVisual: ultimoEstado.modo_visual
@@ -1663,10 +1764,7 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // 12. EXPANDIR FOTO (.expandir)
     if ((comando === 'expandir' || comando === 'comandoexpandir') && ultimoEstado.titulo) {
-      const fotoExpandida = optimizarFotoConCloudinary(ultimoEstado.foto_original_url, true, 1080);
-
       const imageBuffer = await renderizarFlyer({
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
@@ -1675,14 +1773,13 @@ app.post('/generar', async (req, res) => {
         datoClave: ultimoEstado.dato_clave,
         autorCita: ultimoEstado.autor_cita,
         fuenteCredito: ultimoEstado.fuente_credito,
-        fotoFinalUrl: fotoExpandida,
-        expandirSinCloudinary: !process.env.CLOUDINARY_CLOUD_NAME,
+        fotoFinalUrl: ultimoEstado.foto_url,
+        expandirSinCloudinary: true,
         esUrgente: ultimoEstado.urgente,
         esHistoria: false,
         modoVisual: 'estandar'
       });
 
-      ultimoEstado.foto_url = fotoExpandida;
       ultimoEstado.fill_mode = 'contain';
       ultimoEstado.modo_visual = 'estandar';
       ultimoEstado.imagen_buffer = imageBuffer;
@@ -1700,7 +1797,6 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // 13. URGENTE / NORMAL / OTRA FOTO IA
     if ((comando === 'urgente' || comando === 'comandourgente') && !argumento && !nuevaFotoTelegram && ultimoEstado.titulo) {
       const nuevaCat = ultimoEstado.categoria.includes('URGENTE') ? ultimoEstado.categoria : `URGENTE / ${ultimoEstado.categoria.split('/')[0].trim()}`;
       const imageBuffer = await renderizarFlyer({
@@ -1712,7 +1808,7 @@ app.post('/generar', async (req, res) => {
         autorCita: ultimoEstado.autor_cita,
         fuenteCredito: ultimoEstado.fuente_credito,
         fotoFinalUrl: ultimoEstado.foto_url,
-        expandirSinCloudinary: ultimoEstado.fill_mode === 'contain' && !process.env.CLOUDINARY_CLOUD_NAME,
+        expandirSinCloudinary: ultimoEstado.fill_mode === 'contain',
         esUrgente: true,
         esHistoria: false,
         modoVisual: ultimoEstado.modo_visual
@@ -1735,7 +1831,6 @@ app.post('/generar', async (req, res) => {
     }
 
     if ((comando === 'normal' || comando === 'comandonormal') && ultimoEstado.titulo) {
-      const fotoMejorada = optimizarFotoConCloudinary(ultimoEstado.foto_original_url, false, 1080);
       const imageBuffer = await renderizarFlyer({
         categoria: ultimoEstado.categoria.replace(/^URGENTE\s*\/\s*/i, ''),
         titulo: ultimoEstado.titulo,
@@ -1744,13 +1839,12 @@ app.post('/generar', async (req, res) => {
         datoClave: ultimoEstado.dato_clave,
         autorCita: ultimoEstado.autor_cita,
         fuenteCredito: ultimoEstado.fuente_credito,
-        fotoFinalUrl: fotoMejorada,
+        fotoFinalUrl: ultimoEstado.foto_url,
         expandirSinCloudinary: false,
         esUrgente: false,
         esHistoria: false,
         modoVisual: 'estandar'
       });
-      ultimoEstado.foto_url = fotoMejorada;
       ultimoEstado.urgente = false;
       ultimoEstado.fill_mode = 'cover';
       ultimoEstado.modo_visual = 'estandar';
@@ -1773,7 +1867,9 @@ app.post('/generar', async (req, res) => {
       const promptFinal = argumento
         ? `${argumento}, photorealistic news journalism photography, sharp focus, no text`
         : ultimoEstado.prompt_imagen_ia;
-      const nuevaFotoIA = construirUrlPollinationsHD(promptFinal);
+      const nuevaUrlIA = construirUrlPollinationsHD(promptFinal);
+      const descargadaIA = await descargarYValidarImagen(nuevaUrlIA, 9000);
+      const fotoFinalIA = descargadaIA ? descargadaIA.dataUrl : nuevaUrlIA;
 
       const imageBuffer = await renderizarFlyer({
         categoria: ultimoEstado.categoria,
@@ -1783,15 +1879,15 @@ app.post('/generar', async (req, res) => {
         datoClave: ultimoEstado.dato_clave,
         autorCita: ultimoEstado.autor_cita,
         fuenteCredito: 'ILUSTRACIÓN IA',
-        fotoFinalUrl: nuevaFotoIA,
+        fotoFinalUrl: fotoFinalIA,
         expandirSinCloudinary: false,
         esUrgente: ultimoEstado.urgente,
         esHistoria: false,
         modoVisual: ultimoEstado.modo_visual
       });
 
-      ultimoEstado.foto_url = nuevaFotoIA;
-      ultimoEstado.foto_original_url = nuevaFotoIA;
+      ultimoEstado.foto_url = fotoFinalIA;
+      ultimoEstado.foto_original_url = nuevaUrlIA;
       ultimoEstado.fuente_credito = 'ILUSTRACIÓN IA';
       ultimoEstado.imagen_buffer = imageBuffer;
 
@@ -1808,7 +1904,6 @@ app.post('/generar', async (req, res) => {
       });
     }
 
-    // 14. PROCESAMIENTO DE NOTICIA NUEVA O .EDITAR
     let textoParaProcesar = comando ? argumento : texto_crudo;
     const urlDetectada = textoParaProcesar.match(/https?:\/\/[^\s]+/i)?.[0];
     let fotoDeLink = '';
@@ -1852,22 +1947,23 @@ app.post('/generar', async (req, res) => {
       busquedaFotoWeb = noticiaIA.busqueda_foto_web || titulo;
     }
 
-    let fotoBase = fotoNuevaRecibida || (esEdicion ? ultimoEstado.foto_original_url : '');
+    let fotoFinalParaPlaca = esEdicion ? ultimoEstado.foto_url : '';
+    let fotoOriginalGuardar = esEdicion ? ultimoEstado.foto_original_url : '';
 
-    if (!esEdicion || !fotoBase) {
+    if (fotoNuevaRecibida || !esEdicion || !fotoFinalParaPlaca) {
       const resultadoAuditoria = await auditarYResolverImagen({
-        fotoCandidataUrl: fotoBase,
+        fotoCandidataUrl: fotoNuevaRecibida || fotoOriginalGuardar,
         esFotoManualDelEditor: Boolean(nuevaFotoTelegram),
         titulo,
         busquedaWebSugerida: busquedaFotoWeb,
         promptIaSugerido: promptImagenIA
       });
-      fotoBase = resultadoAuditoria.urlFinal;
+      fotoFinalParaPlaca = resultadoAuditoria.urlFinal;
+      fotoOriginalGuardar = resultadoAuditoria.urlOriginal || resultadoAuditoria.urlFinal;
       if (resultadoAuditoria.fuenteAuto) fuenteCredito = resultadoAuditoria.fuenteAuto;
     }
 
     const usarModoExpandido = fill_mode === 'contain' || (esEdicion && ultimoEstado.fill_mode === 'contain');
-    const fotoFinalUrl = optimizarFotoConCloudinary(fotoBase, usarModoExpandido, 1080);
 
     const imageBuffer = await renderizarFlyer({
       categoria,
@@ -1877,16 +1973,16 @@ app.post('/generar', async (req, res) => {
       datoClave,
       autorCita,
       fuenteCredito,
-      fotoFinalUrl,
-      expandirSinCloudinary: usarModoExpandido && !process.env.CLOUDINARY_CLOUD_NAME,
+      fotoFinalUrl: fotoFinalParaPlaca,
+      expandirSinCloudinary: usarModoExpandido,
       esUrgente,
       esHistoria: false,
       modoVisual: 'estandar'
     });
 
     const nuevoEstado = {
-      foto_url: fotoFinalUrl,
-      foto_original_url: fotoBase,
+      foto_url: fotoFinalParaPlaca,
+      foto_original_url: fotoOriginalGuardar,
       categoria,
       titulo,
       destacar,
@@ -1957,4 +2053,4 @@ app.get('/ultimo-borrador', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`El Registro Sur 2K + Radar 21 Medios listo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`El Registro Sur 2K + Multi-Key listo en puerto ${PORT}`));
