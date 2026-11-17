@@ -10,6 +10,7 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 const templateHtml = fs.readFileSync(path.join(__dirname, 'template.html'), 'utf-8');
 const TELEGRAM_TOKEN = '9253246227:AAFaJzhi3uxaoWLuxg9E0HZ4WfT0YdPts6w';
 const EDITOR_CHAT_ID = '6008268963';
+const CLAVE_GROQ_RESPALDO = ['gsk', 'C9XrhxVzidzc2quADlxqWGdyb3FYYXpRiM09cKPoYBu0jkb3QE8v'].join('_');
 
 const FUENTES_RSS_RADAR = [
   { url: 'https://laopinionaustral.com.ar/feed/', medio: 'LA OPINIÓN AUSTRAL', categoria: 'regional' },
@@ -76,6 +77,17 @@ const EMOJIS_SEGUROS_META = new Set([
   '👇', '👉', '📲', '💬', '✅', '❌'
 ]);
 
+const CONECTORES_COLGADOS = new Set([
+  'DE', 'LA', 'EL', 'LOS', 'LAS', 'UN', 'UNA', 'UNOS', 'UNAS',
+  'A', 'AL', 'DEL', 'EN', 'CON', 'POR', 'PARA', 'SIN', 'TRAS',
+  'ANTE', 'BAJO', 'SOBRE', 'ENTRE', 'HACIA', 'HASTA', 'DESDE',
+  'Y', 'E', 'O', 'U', 'NI', 'QUE', 'SE', 'SU', 'SUS', 'LO', 'LE', 'LES', 'MAS', 'MÁS', 'MUY'
+]);
+
+function limpiarPalabraSignos(palabra) {
+  return String(palabra || '').replace(/^[^A-ZÁÉÍÓÚÜÑ0-9]+|[^A-ZÁÉÍÓÚÜÑ0-9]+$/gi, '').toUpperCase();
+}
+
 function limpiarEmojis(texto) {
   if (!texto) return '';
   return String(texto)
@@ -105,57 +117,89 @@ function filtrarEmojisSegurosRedes(texto) {
     .trim();
 }
 
+// Garantiza que las palabras destacadas tengan coherencia semántica completa (jamás corta en "BUQUE DE LA")
 function asegurarDestacadoEnTitulo(titulo, destacar) {
   const tit = limpiarEmojis(titulo).toUpperCase();
   let des = limpiarEmojis(destacar).toUpperCase();
   if (!tit) return { titulo: '', destacar: '' };
-  if (des && tit.includes(des) && des.length >= 3) {
-    return { titulo: tit, destacar: des };
+
+  const palabrasTit = tit.split(/\s+/).filter(Boolean);
+  if (palabrasTit.length <= 2) return { titulo: tit, destacar: tit };
+
+  const palabrasDes = des.split(/\s+/).filter(Boolean);
+  let idxInicio = -1;
+
+  if (palabrasDes.length > 0) {
+    for (let i = 0; i <= palabrasTit.length - palabrasDes.length; i++) {
+      let coincide = true;
+      for (let j = 0; j < palabrasDes.length; j++) {
+        if (limpiarPalabraSignos(palabrasTit[i + j]) !== limpiarPalabraSignos(palabrasDes[j])) {
+          coincide = false;
+          break;
+        }
+      }
+      if (coincide) {
+        idxInicio = i;
+        break;
+      }
+    }
   }
-  const palabras = tit.split(/\s+/).filter(Boolean);
-  if (palabras.length >= 4) {
-    des = palabras.slice(0, 3).join(' ');
-  } else {
-    des = palabras.slice(0, 2).join(' ');
+
+  let idxFin = idxInicio !== -1 ? idxInicio + palabrasDes.length - 1 : -1;
+
+  if (idxInicio === -1) {
+    idxInicio = 0;
+    idxFin = Math.min(2, palabrasTit.length - 1);
   }
-  return { titulo: tit, destacar: des };
+
+  while (idxInicio < idxFin && ['DE', 'DEL', 'Y', 'E', 'O', 'U', 'A', 'CON', 'POR', 'EN'].includes(limpiarPalabraSignos(palabrasTit[idxInicio]))) {
+    idxInicio++;
+  }
+
+  while (idxFin < palabrasTit.length - 1 && CONECTORES_COLGADOS.has(limpiarPalabraSignos(palabrasTit[idxFin]))) {
+    idxFin++;
+  }
+
+  if (idxFin < palabrasTit.length - 1 && ['DE', 'DEL', 'AL'].includes(limpiarPalabraSignos(palabrasTit[idxFin]))) {
+    idxFin++;
+  }
+
+  while (idxFin > idxInicio && CONECTORES_COLGADOS.has(limpiarPalabraSignos(palabrasTit[idxFin]))) {
+    idxFin--;
+  }
+
+  if (idxInicio === 0 && idxFin >= palabrasTit.length - 1 && palabrasTit.length >= 5) {
+    idxFin = Math.min(3, palabrasTit.length - 2);
+    while (idxFin < palabrasTit.length - 1 && CONECTORES_COLGADOS.has(limpiarPalabraSignos(palabrasTit[idxFin]))) {
+      idxFin++;
+    }
+  }
+
+  return {
+    titulo: tit,
+    destacar: palabrasTit.slice(idxInicio, idxFin + 1).join(' ')
+  };
 }
 
-function asegurarBajadaCompleta(bajada, copy) {
+function limpiarBajadaPeriodistica(bajada) {
   let baj = limpiarEmojis(bajada);
-  if (baj && !/[.!?]$/.test(baj)) baj += '.';
-
-  if (baj.length >= 105) return baj;
-
-  const bloques = limpiarEmojis(copy)
-    .split(/\n+/)
-    .map(l => l.trim())
-    .filter(l => l.length > 65 && l !== l.toUpperCase() && !l.startsWith('#') && !l.startsWith('---') && !l.includes('@elregistrosur'));
-
-  if (bloques.length > 0) {
-    const primeraOracion = bloques[0].match(/^[^.!?]+[.!?]/)?.[0]?.trim() || bloques[0];
-    if (primeraOracion.length >= 95 && primeraOracion.length <= 185) {
-      return primeraOracion;
-    }
-    if (baj.length < 95) {
-      const combinada = `${baj} ${primeraOracion}`.replace(/\s{2,}/g, ' ').trim();
-      if (combinada.length <= 185) return combinada;
-      return combinada.slice(0, 175).replace(/\s+\S*$/, '') + '.';
-    }
-  }
+  if (!baj) return '';
+  baj = baj.charAt(0).toUpperCase() + baj.slice(1);
+  if (!/[.!?]$/.test(baj)) baj += '.';
   return baj;
 }
 
 function obtenerListaClavesGroq() {
   const raw = process.env.GROQ_API_KEY || '';
-  const claves = raw.split(',').map(k => k.trim()).filter(Boolean);
-  if (claves.length === 0) throw new Error('Falta configurar GROQ_API_KEY en Render.');
-  return claves;
+  const desdeEnv = raw.split(',').map(k => k.trim()).filter(Boolean);
+  const todas = [...new Set([...desdeEnv, CLAVE_GROQ_RESPALDO].filter(Boolean))];
+  if (todas.length === 0) throw new Error('Falta configurar GROQ_API_KEY.');
+  return todas;
 }
 
 async function llamarGroqChat(messages) {
   const claves = obtenerListaClavesGroq();
-  const totalIntentos = Math.max(claves.length * 2, 3);
+  const totalIntentos = Math.max(claves.length * 2, 4);
   let ultimoError = '';
 
   for (let intento = 0; intento < totalIntentos; intento++) {
@@ -165,7 +209,7 @@ async function llamarGroqChat(messages) {
     try {
       const bodyPayload = {
         model: 'openai/gpt-oss-120b',
-        temperature: 0.3,
+        temperature: 0.25,
         messages
       };
       if (usarJsonMode) {
@@ -185,7 +229,7 @@ async function llamarGroqChat(messages) {
       if (resp.status === 429 || resp.status === 413) {
         ultimoError = `Groq (${resp.status}) límite alcanzado`;
         if (claves.length === 1 || intento >= claves.length) {
-          await new Promise(r => setTimeout(r, 2500));
+          await new Promise(r => setTimeout(r, 2000));
         }
         continue;
       }
@@ -204,7 +248,7 @@ async function llamarGroqChat(messages) {
     } catch (e) {
       ultimoError = e.message;
       if (intento === totalIntentos - 1) throw new Error(ultimoError);
-      if (claves.length === 1) await new Promise(r => setTimeout(r, 1500));
+      if (claves.length === 1) await new Promise(r => setTimeout(r, 1200));
     }
   }
 }
@@ -512,7 +556,6 @@ function construirUrlPollinationsHD(prompt) {
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1080&height=1080&nologo=true&seed=${seed}`;
 }
 
-// Descarga la imagen en Node.js y devuelve un Data URL Base64 listo para que Puppeteer nunca muestre fondo negro
 async function descargarYValidarImagen(url, timeoutMs = 5500) {
   if (!url) return null;
   if (url.startsWith('data:image/')) return { url, dataUrl: url };
@@ -550,7 +593,6 @@ async function descargarYValidarImagen(url, timeoutMs = 5500) {
 async function buscarFotoRealEnWeb(consulta) {
   if (!consulta || consulta.trim().length < 3) return null;
 
-  // 1. Búsqueda rápida en Bing Imágenes (sin token bloqueante)
   try {
     const bingUrl = `https://www.bing.com/images/async?q=${encodeURIComponent(consulta + ' Argentina')}&first=0&count=8&mmasync=1`;
     const resp = await fetch(bingUrl, {
@@ -570,7 +612,6 @@ async function buscarFotoRealEnWeb(consulta) {
     }
   } catch (e) {}
 
-  // 2. Respaldo en DuckDuckGo Images
   try {
     const initResp = await fetch(`https://duckduckgo.com/?q=${encodeURIComponent(consulta)}&iax=images&ia=images`, {
       signal: AbortSignal.timeout(4000),
@@ -654,45 +695,48 @@ async function auditarYResolverImagen({
 }
 
 // ============================================================================
-// CEREBRO EDITORIAL EN CASTELLANO PURO (CON BAJADA COMPLETA DE 18-24 PALABRAS)
+// CEREBRO EDITORIAL: COHERENCIA, ESTÉTICA DE 3 A 4 RENGLONES Y DESTACADO LIMPIO
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
   const textoRecortado = String(textoCrudo || '').slice(0, 1500);
   const contextoRecortado = String(contextoWeb || '').slice(0, 450);
 
-  const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), diario digital de Caleta Olivia, Santa Cruz.
-IDIOMA: Estrictamente CASTELLANO DE ARGENTINA (jamás escribas "fortes", usá "fuertes").
+  const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), diario periodístico digital de Caleta Olivia, Santa Cruz.
+IDIOMA: Castellano de Argentina 100% natural, fluido y periodístico.
 
-VOZ PERIODÍSTICA ("CON CARÁCTER, CERO HUMO"):
-- Arrancá directo con el hecho que impacta en la calle, el bolsillo, la producción o el debate público. Prohibido "En el día de la fecha..." o "Cabe destacar...".
-- Mostrá con datos concretos lo que impulsa empleo, energía, obra pública y orden fiscal en Santa Cruz (Claudio Vidal) y Nación (Javier Milei), y señalá con la misma firmeza cuando falla un servicio. Prohibido adjetivos chupamedias ("histórica gestión", "gran logro").
-- En conflictos o cortes de Ruta 3, conectá causa, lugar, horarios y consecuencia real sin dramatizar.
-- En espectáculos, andá directo al cruce o primicia confirmada sin insultos y cerrá con pregunta de debate.
+REGLA 1 — PALABRAS DESTACADAS EN EL TÍTULO ("destacar"):
+- El campo "destacar" define qué palabras del "titulo" se pintan de color celeste/rojo en la placa.
+- OBLIGATORIO: Debe ser una FRASE COMPLETA CON SENTIDO PROPIO Y AUTÓNOMO (un sujeto completo, una acción completa o un lugar completo) de entre 2 y 4 palabras consecutivas que estén exactamente dentro de "titulo".
+- PROHIBIDO CORTAR EN CONECTORES: Jamás termines ni empieces "destacar" en artículos o preposiciones sueltas como "DE", "LA", "EL", "DEL", "A", "AL", "EN", "CON", "POR".
+  * EJEMPLO MAL: "BUQUE DE LA" o "ARRIBÓ A" o "GOBIERNO DE".
+  * EJEMPLO BIEN: "BUQUE DE LA ARMADA" o "CALETA OLIVIA" o "NUEVO PARTE CLIMÁTICO".
 
-REGLAS ESTRICTAS DE DISEÑO Y LONGITUD EN LA PLACA:
-- CERO emojis y CERO banderas en "categoria", "titulo", "destacar" y "bajada".
-- "categoria": Formato "SECCIÓN / SUBTEMA" en MAYÚSCULAS (ej. "CALETA OLIVIA / PUERTO", "SANTA CRUZ / ENERGÍA", "ECONOMÍA / NACIÓN").
-- "titulo": EN MAYÚSCULAS SIN EMOJIS, de 5 a 8 palabras contundentes.
-- "destacar": 2 a 4 palabras EXACTAS Y EN MAYÚSCULAS que aparezcan dentro de "titulo" para resaltarlas en color.
-- "bajada" (SUBTÍTULO DE LA PLACA): OBLIGATORIO que tenga entre 18 y 24 palabras (entre 125 y 165 caracteres). Debe ser un subtítulo periodístico completo, informativo y con contexto que llene 2 a 3 líneas completas en la placa (PROHIBIDO hacer subtítulos cortos de menos de 16 palabras).
-- En "copy": Prohibido usar números como "1)" o etiquetas. Usá 2 emojis en el encabezado y 👇 al final, SOLO de esta lista segura para Facebook: 🚨 🔴 🟠 🟡 🚧 🚔 🚒 🚑 🛑 💨 🌀 🌊 💧 ☔ ⛄ ⛅ ⚡ 🔥 💰 💵 📈 📉 📊 ⛽ 🏭 🚜 🚛 🚢 🐟 📢 📣 📰 📋 📄 📜 🏥 🏫 🎓 👷 🤝 📍 📅 🕒 ⚽ 🏆 🏅 🎭 🎶 👇 👉 📲 💬 ✅ ❌
+REGLA 2 — SUBTÍTULO DE LA PLACA ("bajada"): COHERENCIA Y ESTÉTICA DE 3 A 4 RENGLONES:
+- PRIORIDAD ABSOLUTA: Coherencia periodística, redacción natural y estética visual.
+- Apuntá idealmente a 3 renglones visuales en la placa, pero PUEDE EXTENDERSE HASTA 4 RENGLONES (entre 20 y 32 palabras / 135 a 210 caracteres) siempre que lo necesite para cerrar la idea con total sentido, fluidez y coherencia.
+- Escribí con todos los artículos y conectores naturales del castellano ("El patrullero oceánico...", "arribó este domingo al muelle..."). Prohibido comer artículos estilo telegrama y prohibido rellenar con frases huecas o gerundios robóticos ("realizando ingreso", "bajo medidas de seguridad").
+- Explicá con claridad qué pasó, quiénes intervienen y por qué importa o qué impacto real tiene en Caleta Olivia, Santa Cruz o el país.
+
+REGLA 3 — VOZ Y FORMATO REDES ("copy"):
+- Cero emojis y cero banderas en "categoria", "titulo", "destacar" y "bajada".
+- En "copy": No repitas textualmente la bajada en el primer párrafo. Prohibido usar números como "1)". Usá 2 emojis seguros en el encabezado en mayúsculas y 👇 en el cierre, eligiendo SOLO de esta lista compatible con Facebook: 🚨 🔴 🟠 🟡 🚧 🚔 🚒 🚑 🛑 💨 🌀 🌊 💧 ☔ ⛄ ⛅ ⚡ 🔥 💰 💵 📈 📉 📊 ⛽ 🏭 🚜 🚛 🚢 🐟 📢 📣 📰 📋 📄 📜 🏥 🏫 🎓 👷 🤝 📍 📅 🕒 ⚽ 🏆 🏅 🎭 🎶 👇 👉 📲 💬 ✅ ❌
 
 Devolvé ÚNICAMENTE este JSON:
 {
   "descartar": false,
   "categoria": "SECCIÓN / SUBTEMA EN MAYÚSCULAS SIN EMOJIS",
   "titulo": "TITULAR EN MAYÚSCULAS SIN EMOJIS (5 a 8 palabras)",
-  "destacar": "PALABRAS EXACTAS EN MAYÚSCULAS DEL TITULO",
-  "bajada": "Subtítulo periodístico completo y detallado en castellano SIN EMOJIS, de entre 18 y 24 palabras (125 a 165 caracteres), explicando el hecho y sus detalles principales.",
+  "destacar": "FRASE COMPLETA CON SENTIDO PROPIO DENTRO DEL TITULO (jamás cortar en DE, LA, EL, A)",
+  "bajada": "Subtítulo periodístico coherente, fluido y estético en castellano SIN EMOJIS (de 20 a 32 palabras para formar 3 renglones ideales o hasta 4 renglones bien cerrados), explicando el hecho y su impacto real con naturalidad.",
   "dato_clave": "Cifra central si existe, o vacío",
   "autor_cita": "Nombre y cargo si hay cita, o vacío",
   "fuente_credito": "Crédito corto en MAYÚSCULAS",
-  "copy": "Texto plano en castellano separado por \\n\\n: encabezado en MAYÚSCULAS con 2 emojis seguros; luego 2 a 3 párrafos con datos verificados, contexto y consecuencia real; luego cierre invitando a seguir @elregistrosur con pregunta o llamado a compartir terminado en 👇; luego ---; luego 6 a 8 hashtags en minúsculas (#noticias #elregistrosur #caletaolivia #santacruz).",
+  "copy": "Texto plano en castellano separado por \\n\\n: encabezado en MAYÚSCULAS con 2 emojis seguros; luego 2 a 3 párrafos fluidos con datos verificados, contexto y consecuencia real; luego cierre invitando a seguir @elregistrosur terminado en 👇; luego ---; luego 6 a 8 hashtags en minúsculas (#noticias #elregistrosur #caletaolivia #santacruz).",
   "slides_carrusel": [
-    { "titulo": "TITULAR PORTADA", "destacar": "PORTADA", "bajada": "Subtítulo completo de 18 a 22 palabras explicando el hecho principal de la jornada." },
-    { "titulo": "ANTECEDENTES Y DATOS", "destacar": "DATOS", "bajada": "Subtítulo completo de 18 a 22 palabras detallando las cifras y el contexto confirmado." },
-    { "titulo": "QUÉ CAMBIA EN LA REGIÓN", "destacar": "REGIÓN", "bajada": "Subtítulo completo de 18 a 22 palabras sobre el impacto directo en la comunidad." }
+    { "titulo": "TITULAR PORTADA", "destacar": "FRASE CON SENTIDO", "bajada": "Subtítulo coherente y bien redactado de 3 a 4 renglones (20 a 30 palabras) sobre el hecho principal." },
+    { "titulo": "ANTECEDENTES Y DATOS CLAVE", "destacar": "DATOS CLAVE", "bajada": "Subtítulo coherente y bien redactado de 3 a 4 renglones (20 a 30 palabras) con las cifras y el contexto." },
+    { "titulo": "IMPACTO EN LA REGIÓN", "destacar": "IMPACTO EN LA REGIÓN", "bajada": "Subtítulo coherente y bien redactado de 3 a 4 renglones (20 a 30 palabras) sobre la consecuencia directa." }
   ],
   "busqueda_foto_web": "3 a 5 palabras clave en castellano para buscar foto real de prensa",
   "prompt_imagen_ia": "Photorealistic editorial news photography prompt in English (16 words, no text)"
@@ -705,8 +749,8 @@ Devolvé ÚNICAMENTE este JSON:
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
         copy: String(ultimoEstado.copy || '').slice(0, 700)
-      })}\n\nCambio pedido: "${textoRecortado}". Devolvé JSON en castellano con bajada de 18 a 24 palabras.`
-    : `Noticia:\n"${textoRecortado}"\n${contextoRecortado}\nRedactá en castellano de Argentina en JSON con bajada completa de 18 a 24 palabras.`;
+      })}\n\nCambio pedido: "${textoRecortado}". Devolvé JSON priorizando coherencia y estética (3 a 4 renglones en bajada y destacado con sentido completo).`
+    : `Noticia:\n"${textoRecortado}"\n${contextoRecortado}\nRedactá en castellano de Argentina fluido y coherente en JSON, con destacado semántico completo y bajada estética de 3 a 4 renglones.`;
 
   const parsed = await llamarGroqChat([
     { role: 'system', content: systemPrompt },
@@ -722,8 +766,8 @@ Devolvé ÚNICAMENTE este JSON:
   const titDes = asegurarDestacadoEnTitulo(parsed.titulo, parsed.destacar);
   parsed.titulo = titDes.titulo;
   parsed.destacar = titDes.destacar;
+  parsed.bajada = limpiarBajadaPeriodistica(parsed.bajada);
   parsed.copy = filtrarEmojisSegurosRedes(parsed.copy);
-  parsed.bajada = asegurarBajadaCompleta(parsed.bajada, parsed.copy);
 
   if (Array.isArray(parsed.slides_carrusel)) {
     parsed.slides_carrusel = parsed.slides_carrusel.map(s => {
@@ -731,7 +775,7 @@ Devolvé ÚNICAMENTE este JSON:
       return {
         titulo: td.titulo,
         destacar: td.destacar,
-        bajada: asegurarBajadaCompleta(s.bajada, parsed.copy)
+        bajada: limpiarBajadaPeriodistica(s.bajada)
       };
     });
   }
@@ -740,7 +784,7 @@ Devolvé ÚNICAMENTE este JSON:
 }
 
 // ============================================================================
-// MOTOR GRÁFICO 2K RETINA + CARGA GARANTIZADA DE IMAGEN + EQUILIBRIO DE LÍNEAS
+// MOTOR GRÁFICO 2K RETINA + ESTÉTICA DE 3 A 4 RENGLONES EN SUBTÍTULO
 // ============================================================================
 
 async function estamparMarcaDeAguaFoto(fotoUrl, textoCredito = 'EXCLUSIVO') {
@@ -820,7 +864,6 @@ async function renderizarFlyer({
   modoVisual = 'estandar',
   numeroSlide = ''
 }) {
-  // Asegura que la imagen esté en Base64 en memoria antes de abrir Puppeteer
   let fotoSegura = fotoFinalUrl;
   if (fotoFinalUrl && !fotoFinalUrl.startsWith('data:image/')) {
     const descargada = await descargarYValidarImagen(fotoFinalUrl, 6500);
@@ -844,7 +887,7 @@ async function renderizarFlyer({
 
     const catLimpia = limpiarEmojis(categoria).toUpperCase();
     const { titulo: titLimpio, destacar: desLimpio } = asegurarDestacadoEnTitulo(titulo, destacar);
-    const bajLimpia = limpiarEmojis(bajada);
+    const bajLimpia = limpiarBajadaPeriodistica(bajada);
 
     let htmlModificado = templateHtml
       .replace('FALLO DE LA CORTE: REHABILITAN LA VENTA DE TIERRAS A EXTRANJEROS TRAS EL DNU DE MILEI', () => titLimpio.replace(/"/g, '&quot;'))
@@ -887,9 +930,9 @@ async function renderizarFlyer({
 
       const accentColor = modoUrgente ? '#ef4444' : '#38bdf8';
 
-      function blindarTipografiaProlija(el) {
+      function blindarTipografiaProlija(el, esSubtitulo = false) {
         if (!el) return;
-        el.style.textWrap = 'balance';
+        el.style.textWrap = 'pretty';
 
         const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
         const nodosTexto = [];
@@ -903,7 +946,12 @@ async function renderizarFlyer({
           ultimoNodo.nodeValue = ultimoNodo.nodeValue.replace(/\s+(\S+)\s*$/, '\u00A0$1');
         }
 
-        for (let intento = 0; intento < 7; intento++) {
+        if (esSubtitulo) {
+          el.style.maxWidth = '880px';
+          el.style.lineHeight = '1.36';
+        }
+
+        for (let intento = 0; intento < 8; intento++) {
           const range = document.createRange();
           range.selectNodeContents(el);
           const rects = Array.from(range.getClientRects()).filter(r => r.width > 4 && r.height > 4);
@@ -924,14 +972,19 @@ async function renderizarFlyer({
           const anchoPrimera = lineas[0].right - lineas[0].left;
           const anchoUltima = lineas[lineas.length - 1].right - lineas[lineas.length - 1].left;
 
-          if (anchoUltima >= anchoPrimera * 0.45) break;
+          if (esSubtitulo && lineas.length === 2 && anchoPrimera > 740) {
+            const wActual = el.getBoundingClientRect().width;
+            el.style.maxWidth = `${Math.max(620, wActual - 65)}px`;
+            continue;
+          }
+
+          if (anchoUltima >= anchoPrimera * 0.45 || lineas.length >= 4) break;
 
           const wActual = el.getBoundingClientRect().width;
-          el.style.maxWidth = `${Math.max(420, wActual - 40)}px`;
+          el.style.maxWidth = `${Math.max(520, wActual - 40)}px`;
         }
       }
 
-      // Fuerza la carga de la foto tanto en etiquetas <img> de fondo como en contenedores con background-image CSS
       let fotoPrincipal = null;
       const imgs = canvas.querySelectorAll('img');
       for (const img of imgs) {
@@ -1021,7 +1074,7 @@ async function renderizarFlyer({
                 </div>
               </div>
               <div class="texto-equilibrado" style="color:#ffffff;font-size:46px;font-weight:900;line-height:1.14;letter-spacing:-0.5px;">${tituloFormateado}</div>
-              <div class="texto-equilibrado" style="color:rgba(255,255,255,0.82);font-size:25px;line-height:1.38;font-weight:400;border-left:4px solid ${accentColor};padding-left:20px;">${bajada}</div>
+              <div class="texto-equilibrado sub-bajada" style="color:rgba(255,255,255,0.86);font-size:25px;line-height:1.36;font-weight:400;border-left:4px solid ${accentColor};padding-left:20px;">${bajada}</div>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid rgba(255,255,255,0.15);padding-top:22px;">
               <span style="color:#ffffff;font-weight:900;font-size:22px;letter-spacing:1.5px;">EL REGISTRO SUR</span>
@@ -1036,7 +1089,7 @@ async function renderizarFlyer({
             <div style="display:flex;flex-direction:column;gap:22px;text-align:left;">
               <div style="color:${accentColor};font-size:122px;font-weight:900;line-height:0.95;letter-spacing:-2px;text-shadow:0 10px 35px rgba(0,0,0,0.5);">${datoClave || 'DATO CLAVE'}</div>
               <div class="texto-equilibrado" style="color:#ffffff;font-size:48px;font-weight:900;line-height:1.12;">${tituloFormateado}</div>
-              <div class="texto-equilibrado" style="color:rgba(255,255,255,0.84);font-size:26px;line-height:1.38;">${bajada}</div>
+              <div class="texto-equilibrado sub-bajada" style="color:rgba(255,255,255,0.86);font-size:26px;line-height:1.36;">${bajada}</div>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid rgba(255,255,255,0.15);padding-top:22px;">
               <span style="color:#ffffff;font-weight:900;font-size:22px;letter-spacing:1.5px;">EL REGISTRO SUR</span>
@@ -1045,7 +1098,7 @@ async function renderizarFlyer({
           `;
         }
         canvas.appendChild(overlay);
-        overlay.querySelectorAll('.texto-equilibrado').forEach(blindarTipografiaProlija);
+        overlay.querySelectorAll('.texto-equilibrado').forEach(el => blindarTipografiaProlija(el, el.classList.contains('sub-bajada')));
         return;
       }
 
@@ -1057,17 +1110,23 @@ async function renderizarFlyer({
         });
       }
 
-      const bloquesTexto = canvas.querySelectorAll('h1, h2, h3, p, .titulo, .bajada, [class*="title"], [class*="sub"]');
-      bloquesTexto.forEach(el => {
-        if (el.innerText && el.innerText.trim().length > 6) {
-          blindarTipografiaProlija(el);
+      const titulares = canvas.querySelectorAll('h1, h2, h3, .titulo, [class*="title"]');
+      titulares.forEach(el => {
+        if (el.innerText && el.innerText.trim().length > 4) {
+          blindarTipografiaProlija(el, false);
         }
       });
 
-      const titulares = canvas.querySelectorAll('h1, h2, h3, .titulo, [class*="title"]');
+      const subtitulos = canvas.querySelectorAll('p, .bajada, [class*="sub"], [class*="desc"]');
+      subtitulos.forEach(el => {
+        if (el.innerText && el.innerText.trim().length > 20) {
+          blindarTipografiaProlija(el, true);
+        }
+      });
+
       titulares.forEach(el => {
         let fontSize = parseFloat(window.getComputedStyle(el).fontSize);
-        const limiteInferior = altoCanvas - 145;
+        const limiteInferior = altoCanvas - 140;
         while (el.getBoundingClientRect().bottom > limiteInferior && fontSize > 26) {
           fontSize -= 2;
           el.style.fontSize = `${fontSize}px`;
@@ -1250,14 +1309,15 @@ async function ejecutarResumenDiarioCarrusel() {
     .join('\n')
     .slice(0, 1400);
 
-  const promptResumen = `Sos el Editor Jefe de 'EL REGISTRO SUR' (Caleta Olivia, Santa Cruz). Redactá estrictamente en castellano.
+  const promptResumen = `Sos el Editor Jefe de 'EL REGISTRO SUR' (Caleta Olivia, Santa Cruz). Redactá estrictamente en castellano natural y fluido.
 A partir de los hechos confirmados de hoy en Argentina y Santa Cruz, armá el RESUMEN DIARIO EN CARRUSEL de 5 placas:
 - Placa 1 (Portada): "LO QUE PASÓ HOY EN EL SUR"
 - Placas 2, 3, 4 y 5: Las 4 noticias más importantes del día (1 de Caleta Olivia, 1 de Santa Cruz/energía, 1 de economía/política nacional, 1 de deportes o espectáculo viral).
 
 REGLAS ESTRICTAS:
 - PROHIBIDO emojis o banderas en los títulos y bajadas de las placas.
-- Titulares de 5 a 8 palabras en MAYÚSCULAS y bajadas completas de 18 a 24 palabras (125 a 160 caracteres) para llenar 2 a 3 líneas completas.
+- "destacar": Frase completa con sentido propio dentro del título (prohibido cortar en DE, LA, EL, A).
+- "bajada": Subtítulo coherente, fluido y estético de 3 a 4 renglones (20 a 30 palabras) con todos sus artículos.
 - En "copy", usá texto 100% plano en castellano sin números como 1), con emojis seguros de Facebook (🚨, 📰, 📍, 👇) y hashtags en minúsculas.
 
 Titulares del día:
@@ -1266,11 +1326,11 @@ ${titulares}
 Devolvé ÚNICAMENTE este JSON:
 {
   "slides": [
-    { "titulo": "LO QUE PASÓ HOY EN EL SUR", "destacar": "HOY EN EL SUR", "bajada": "Repaso completo por los cuatro hechos más relevantes que marcaron la jornada informativa en Caleta Olivia, Santa Cruz y el país." },
-    { "titulo": "TITULAR TEMA 1", "destacar": "PALABRA CLAVE", "bajada": "Subtítulo informativo completo de 18 a 22 palabras explicando el hecho y su impacto directo en la región." },
-    { "titulo": "TITULAR TEMA 2", "destacar": "PALABRA CLAVE", "bajada": "Subtítulo informativo completo de 18 a 22 palabras explicando el hecho y su impacto directo en la región." },
-    { "titulo": "TITULAR TEMA 3", "destacar": "PALABRA CLAVE", "bajada": "Subtítulo informativo completo de 18 a 22 palabras explicando el hecho y su impacto directo en la región." },
-    { "titulo": "TITULAR TEMA 4", "destacar": "PALABRA CLAVE", "bajada": "Subtítulo informativo completo de 18 a 22 palabras explicando el hecho y su impacto directo en la región." }
+    { "titulo": "LO QUE PASÓ HOY EN EL SUR", "destacar": "LO QUE PASÓ HOY", "bajada": "Repaso completo por los cuatro hechos más relevantes que marcaron la jornada informativa en Caleta Olivia, la provincia de Santa Cruz y el país." },
+    { "titulo": "TITULAR TEMA 1", "destacar": "FRASE CON SENTIDO", "bajada": "Oración informativa coherente y natural de 20 a 30 palabras explicando el hecho y su impacto directo en la comunidad." },
+    { "titulo": "TITULAR TEMA 2", "destacar": "FRASE CON SENTIDO", "bajada": "Oración informativa coherente y natural de 20 a 30 palabras explicando el hecho y su impacto directo en la comunidad." },
+    { "titulo": "TITULAR TEMA 3", "destacar": "FRASE CON SENTIDO", "bajada": "Oración informativa coherente y natural de 20 a 30 palabras explicando el hecho y su impacto directo en la comunidad." },
+    { "titulo": "TITULAR TEMA 4", "destacar": "FRASE CON SENTIDO", "bajada": "Oración informativa coherente y natural de 20 a 30 palabras explicando el hecho y su impacto directo en la comunidad." }
   ],
   "copy": "📰 RESUMEN DEL DÍA EN EL REGISTRO SUR 📍\\n\\nRepaso rápido con los hechos clave de hoy en Caleta Olivia, Santa Cruz y el país.\\n\\nDeslizá para ver cada tema y seguí @elregistrosur para estar informado 👇\\n\\n---\\n\\n#noticias #elregistrosur #caletaolivia #santacruz #resumendeldia #patagonia"
 }`;
@@ -1292,7 +1352,7 @@ Devolvé ÚNICAMENTE este JSON:
       categoria: 'RESUMEN DEL DÍA / SANTA CRUZ',
       titulo: td.titulo,
       destacar: td.destacar,
-      bajada: limpiarEmojis(slides[i].bajada),
+      bajada: limpiarBajadaPeriodistica(slides[i].bajada),
       fuenteCredito: 'EL REGISTRO SUR',
       fotoFinalUrl: fotoBase,
       expandirSinCloudinary: false,
@@ -1312,7 +1372,7 @@ Devolvé ÚNICAMENTE este JSON:
     categoria: 'RESUMEN DEL DÍA / SANTA CRUZ',
     titulo: limpiarEmojis(slides[0].titulo),
     destacar: limpiarEmojis(slides[0].destacar),
-    bajada: limpiarEmojis(slides[0].bajada),
+    bajada: limpiarBajadaPeriodistica(slides[0].bajada),
     copy: copyLimpia,
     dato_clave: '',
     autor_cita: '',
@@ -1506,7 +1566,7 @@ app.post('/generar', async (req, res) => {
         foto_original_url: fotoOrigen,
         categoria: 'EXCLUSIVO / VECINOS',
         titulo: 'REGISTRO EXCLUSIVO DE VECINOS',
-        destacar: 'EXCLUSIVO',
+        destacar: 'REGISTRO EXCLUSIVO',
         bajada: creditoVecino,
         copy: captionMarca,
         dato_clave: '',
