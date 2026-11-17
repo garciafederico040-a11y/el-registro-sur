@@ -77,6 +77,7 @@ let ultimoResumenDiaEnviado = '';
 
 app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Radar 21 Medios activo'));
 
+// Lista blanca de emojis Unicode 6.0-11.0 100% compatibles con Facebook Web y Windows (sin U+FE0F ni banderas)
 const EMOJIS_SEGUROS_META = new Set([
   '🚨', '🔴', '🟠', '🟡', '🚧', '🚔', '🚒', '🚑', '🛑',
   '💨', '🌀', '🌊', '💧', '☔', '⛄', '⛅', '⚡', '🔥', '🌈',
@@ -112,6 +113,25 @@ function filtrarEmojisSegurosRedes(texto) {
     .trim();
 }
 
+// Función robusta con reintento automático ante errores 429 de Groq
+async function fetchConReintento(url, opciones, maxReintentos = 3) {
+  for (let intento = 1; intento <= maxReintentos; intento++) {
+    try {
+      const resp = await fetch(url, opciones);
+      if (resp.status === 429 && intento < maxReintentos) {
+        const espera = intento * 4000;
+        console.warn(`Límite 429 alcanzado en Groq. Reintentando en ${espera / 1000}s... (Intento ${intento}/${maxReintentos})`);
+        await new Promise(r => setTimeout(r, espera));
+        continue;
+      }
+      return resp;
+    } catch (e) {
+      if (intento === maxReintentos) throw e;
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+}
+
 function generarTecladoTactil() {
   return {
     inline_keyboard: [
@@ -143,10 +163,7 @@ async function responderCallbackTelegram(callbackQueryId, textoAviso = 'Procesan
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        callback_query_id: callbackQueryId.trim(),
-        text: textoAviso
-      })
+      body: JSON.stringify({ callback_query_id: callbackQueryId.trim(), text: textoAviso })
     });
   } catch (e) {}
 }
@@ -164,22 +181,13 @@ async function enviarMensajeTelegram(texto) {
 async function resolverArchivoTelegram(valorRecibido) {
   if (!valorRecibido || !valorRecibido.trim()) return { url: '', path: '' };
   const limpio = valorRecibido.trim();
-  if (limpio.startsWith('http://') || limpio.startsWith('https://')) {
-    return { url: limpio, path: limpio };
-  }
-  if (limpio.includes('/')) {
-    return {
-      url: `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${limpio}`,
-      path: limpio
-    };
-  }
+  if (limpio.startsWith('http://') || limpio.startsWith('https://')) return { url: limpio, path: limpio };
+  if (limpio.includes('/')) return { url: `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${limpio}`, path: limpio };
+  
   const resp = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getFile?file_id=${limpio}`);
   const data = await resp.json();
   if (data.ok && data.result && data.result.file_path) {
-    return {
-      url: `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${data.result.file_path}`,
-      path: data.result.file_path
-    };
+    return { url: `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${data.result.file_path}`, path: data.result.file_path };
   }
   return { url: '', path: '' };
 }
@@ -194,15 +202,13 @@ async function transcribirAudioConGroq(audioUrl) {
   form.append('model', 'whisper-large-v3-turbo');
   form.append('language', 'es');
 
-  const resp = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+  const resp = await fetchConReintento('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${apiKey}` },
     body: form
   });
 
-  if (!resp.ok) {
-    throw new Error(`Error transcribiendo audio (${resp.status}): ${await resp.text()}`);
-  }
+  if (!resp.ok) throw new Error(`Error transcribiendo audio (${resp.status}): ${await resp.text()}`);
   const data = await resp.json();
   return data.text || '';
 }
@@ -236,11 +242,7 @@ async function extraerNoticiaDeLink(url) {
 
     const dominio = new URL(url).hostname.replace('www.', '').split('.')[0].toUpperCase();
 
-    return {
-      fotoExtraida: fotoUrl,
-      fuenteDominio: dominio,
-      textoExtraido: `TÍTULO ORIGINAL: ${ogTitleMatch ? ogTitleMatch[1] : ''}\nCUERPO: ${parrafos}`
-    };
+    return { fotoExtraida: fotoUrl, fuenteDominio: dominio, textoExtraido: `TÍTULO ORIGINAL: ${ogTitleMatch ? ogTitleMatch[1] : ''}\nCUERPO: ${parrafos}` };
   } catch (e) {
     return { fotoExtraida: '', fuenteDominio: '', textoExtraido: '' };
   }
@@ -314,13 +316,10 @@ Devolvé ÚNICAMENTE este JSON:
 }`;
 
   try {
-    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const resp = await fetchConReintento('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       signal: AbortSignal.timeout(10000),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
       body: JSON.stringify({
         model: 'openai/gpt-oss-120b',
         response_format: { type: 'json_object' },
@@ -374,9 +373,7 @@ function construirUrlPollinationsHD(prompt) {
 
 async function descargarYValidarImagen(url) {
   if (!url || !url.startsWith('http')) return null;
-  if (/logo|favicon|avatar|placeholder|default|icon|sprite|blank|1x1|banner-site/i.test(url)) {
-    return null;
-  }
+  if (/logo|favicon|avatar|placeholder|default|icon|sprite|blank|1x1|banner-site/i.test(url)) return null;
   try {
     const resp = await fetch(url, {
       redirect: 'follow',
@@ -392,11 +389,7 @@ async function descargarYValidarImagen(url) {
     if (buffer.length < 18000 || buffer.length > 8 * 1024 * 1024) return null;
 
     const mime = contentType.split(';')[0].trim();
-    return {
-      url,
-      dataUrl: `data:${mime};base64,${buffer.toString('base64')}`,
-      bytes: buffer.length
-    };
+    return { url, dataUrl: `data:${mime};base64,${buffer.toString('base64')}`, bytes: buffer.length };
   } catch (e) {
     return null;
   }
@@ -404,11 +397,9 @@ async function descargarYValidarImagen(url) {
 
 async function auditarCoherenciaConVision(imagenValidada, titulo, bajada, categoria) {
   const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey || !imagenValidada) {
-    return { aprobada: false, razon: 'Sin imagen válida para auditar' };
-  }
+  if (!apiKey || !imagenValidada) return { aprobada: false, razon: 'Sin imagen válida para auditar' };
 
-  const promptAuditor = `Sos el Auditor Visual Jefe del diario digital 'El Registro Sur'. Respondé estrictamente en castellano.
+  const promptAuditor = `Sos el Auditor Visual Jefe de 'El Registro Sur'. Respondé estrictamente en castellano.
 Analizá la imagen adjunta y comparala con esta noticia:
 - SECCIÓN: ${categoria}
 - TITULAR: ${titulo}
@@ -426,7 +417,7 @@ Devolvé ÚNICAMENTE este JSON:
 
   for (const modelo of modelosVision) {
     try {
-      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const resp = await fetchConReintento('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         signal: AbortSignal.timeout(12000),
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
@@ -459,7 +450,7 @@ Devolvé ÚNICAMENTE este JSON:
 }`;
 
   try {
-    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const resp = await fetchConReintento('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       signal: AbortSignal.timeout(10000),
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
@@ -506,17 +497,13 @@ async function buscarFotoRealEnWeb(consulta) {
 }
 
 async function auditarYResolverImagen({ fotoCandidataUrl, esFotoManualDelEditor, titulo, bajada, categoria, busquedaWebSugerida, promptIaSugerido }) {
-  if (fotoCandidataUrl && esFotoManualDelEditor) {
-    return { urlFinal: fotoCandidataUrl, fuenteAuto: 'GENTILEZA / ARCHIVO' };
-  }
+  if (fotoCandidataUrl && esFotoManualDelEditor) return { urlFinal: fotoCandidataUrl, fuenteAuto: 'GENTILEZA / ARCHIVO' };
 
   if (fotoCandidataUrl) {
     const validada = await descargarYValidarImagen(fotoCandidataUrl);
     if (validada) {
       const veredicto = await auditarCoherenciaConVision(validada, titulo, bajada, categoria);
-      if (veredicto.aprobada) {
-        return { urlFinal: fotoCandidataUrl, fuenteAuto: '' };
-      }
+      if (veredicto.aprobada) return { urlFinal: fotoCandidataUrl, fuenteAuto: '' };
       busquedaWebSugerida = veredicto.busqueda_web || busquedaWebSugerida;
       promptIaSugerido = veredicto.prompt_ia_corregido || promptIaSugerido;
     }
@@ -524,9 +511,7 @@ async function auditarYResolverImagen({ fotoCandidataUrl, esFotoManualDelEditor,
 
   const queryWeb = busquedaWebSugerida || titulo;
   const fotoWebEncontrada = await buscarFotoRealEnWeb(queryWeb);
-  if (fotoWebEncontrada) {
-    return { urlFinal: fotoWebEncontrada, fuenteAuto: 'ARCHIVO / PRENSA' };
-  }
+  if (fotoWebEncontrada) return { urlFinal: fotoWebEncontrada, fuenteAuto: 'ARCHIVO / PRENSA' };
 
   const fotoIA = construirUrlPollinationsHD(promptIaSugerido || 'Argentina Patagonia journalism news photography');
   return { urlFinal: fotoIA, fuenteAuto: 'ILUSTRACIÓN IA' };
@@ -538,11 +523,11 @@ async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = fa
 
   const antecedentesExtra = await buscarContextoEnGoogleNews(`${textoCrudo} antecedentes obras montos`);
 
-  const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), medio periodístico digital de Caleta Olivia, Santa Cruz ("El sur tiene registro"). Redactá ABSOLUTAMENTE TODO EN CASTELLANO PERFECTO Y NATURAL (prohibido cruzar con portugués u otros idiomas).
+  const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), medio periodístico digital de Caleta Olivia, Santa Cruz ("El sur tiene registro"). Redactá ABSOLUTAMENTE TODO EN CASTELLANO PERFECTO Y NATURAL.
 
 PERSONALIDAD Y VOZ DE REDACCIÓN ("CON CARÁCTER Y CALLE, CERO HUMO"):
 1. NUNCA SUENES VACÍO NI BUROCRÁTICO: Arrancá directo con el hecho que impacta en la calle, el bolsillo, la producción o el debate público, usando verbos de acción y ritmo ágil.
-2. VECINO Y PRODUCCIÓN — CERO CHUPAMEDIAS (1B): Mostrá con cifras y hechos lo que impulsa el empleo, la energía y la obra pública en Santa Cruz (Claudio Vidal) y Nación (Javier Milei). Señalad con la misma firmeza cuando falla un servicio. Prohibido adjetivos elogiosos hacia políticos ("histórica gestión", etc.).
+2. VECINO Y PRODUCCIÓN — CERO CHUPAMEDIAS (1B): Mostrá con cifras y hechos lo que impulsa el empleo, la energía y la obra pública en Santa Cruz (Claudio Vidal) y Nación (Javier Milei). Señalad con la misma firmeza cuando falla un servicio. Prohibido adjetivos elogiosos hacia políticos.
 3. CERO CUENTA CUENTOS EN CONFLICTOS (3): En cortes de Ruta 3, paros o falta de agua, conectá causa y efecto con datos precisos y sin dramatización literaria.
 4. VALIDACIÓN Y DESCARTE SILENCIOSO (2B): Si la noticia no tiene sustento verificable, devolvé "descartar": true.
 
@@ -579,7 +564,7 @@ Devolvé ÚNICAMENTE un JSON válido:
     ? `Borrador actual:\n${JSON.stringify({ categoria: ultimoEstado.categoria, titulo: ultimoEstado.titulo, bajada: ultimoEstado.bajada, copy: ultimoEstado.copy }, null, 2)}\n\nCambio pedido: "${textoCrudo}".\nDevolvé el JSON actualizado en castellano, sin números en el copy ni emojis en titulo.`
     : `Noticia recibida:\n"${textoCrudo}"\n${contextoWeb}\n${antecedentesExtra}\nRedactá en castellano perfecto y validá en JSON.`;
 
-  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+  const response = await fetchConReintento('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify({
@@ -589,10 +574,7 @@ Devolvé ÚNICAMENTE un JSON válido:
     })
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Error de Groq (${response.status}): ${errorText}`);
-  }
+  if (!response.ok) throw new Error(`Error de Groq (${response.status}): ${await response.text()}`);
 
   const data = await response.json();
   const parsed = JSON.parse(data?.choices?.[0]?.message?.content);
@@ -1050,7 +1032,7 @@ Devolvé ÚNICAMENTE este JSON:
   "copy": "📰 RESUMEN DEL DÍA EN EL REGISTRO SUR 📍\n\nRepaso rápido con los hechos clave de hoy en Caleta Olivia, Santa Cruz y el país.\n\nDeslizá para ver cada tema y seguí @elregistrosur para estar informado 👇\n\n---\n\n#noticias #elregistrosur #caletaolivia #santacruz #resumendeldia #patagonia"
 }`;
 
-  const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+  const resp = await fetchConReintento('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify({ model: 'openai/gpt-oss-120b', response_format: { type: 'json_object' }, messages: [{ role: 'user', content: promptResumen }] })
@@ -1292,7 +1274,7 @@ app.post('/generar', async (req, res) => {
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: `🚨 RADAR (${radar.medio.toUpperCase()}) — ¿QUERÉS PUBLICARLO?\n\n${ultimoEstado.copy}`,
+        copy: `🚨 RADAR (${radar.medio.toUpperCase()}) — ¿QUERÉS PUBLICARLO?\n\n${radar.noticiaIA.copy}`,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: ultimoEstado.imagen_buffer.toString('base64')
@@ -1311,7 +1293,7 @@ app.post('/generar', async (req, res) => {
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: `🚧 ALERTA RUTA 3 / SERVICIOS:\n\n${ultimoEstado.copy}`,
+        copy: `🚧 ALERTA RUTA 3 / SERVICIOS:\n\n${alertaVial.noticiaIA.copy}`,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: ultimoEstado.imagen_buffer.toString('base64')
@@ -1772,8 +1754,8 @@ app.get('/ultimo-borrador', (req, res) => {
     categoria: ultimoEstado.categoria,
     titulo: ultimoEstado.titulo,
     bajada: ultimoEstado.bajada,
-    copy: ultimoEstado.copy,
-    url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?tжды`,
+    copy: ultimoState.copy,
+    url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
     imagen_base64: ultimoEstado.imagen_buffer.toString('base64')
   });
 });
