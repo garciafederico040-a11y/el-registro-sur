@@ -12,7 +12,7 @@ const TELEGRAM_TOKEN = '9253246227:AAFaJzhi3uxaoWLuxg9E0HZ4WfT0YdPts6w';
 const EDITOR_CHAT_ID = '6008268963';
 const CLAVE_GROQ_RESPALDO = ['gsk', 'C9XrhxVzidzc2quADlxqWGdyb3FYYXpRiM09cKPoYBu0jkb3QE8v'].join('_');
 
-// Portales con prioridad de feeds RSS directos (entregan link original, foto og:image real y cuerpo completo)
+// Portales con prioridad de feeds RSS directos (entregan link original, foto og:image HD real y cuerpo completo)
 const FUENTES_RSS_RADAR = [
   { url: 'https://laopinionaustral.com.ar/feed/', medio: 'LA OPINIÓN AUSTRAL', categoria: 'regional' },
   { url: 'https://infocaleta.com/v2/feed/', medio: 'INFOCALETA', categoria: 'regional' },
@@ -37,7 +37,8 @@ const FUENTES_RSS_RADAR = [
   { url: 'https://www.pronto.com.ar/rss/feed.xml', medio: 'PRONTO', categoria: 'espectaculos' }
 ];
 
-const DOMINIOS_PROHIBIDOS_IMG = /halo|xbox|playstation|nintendo|steam|epicgames|ign\.com|3djuegos|vandal|hobbyconsolas|meristation|kotaku|fandom|wikia|gamer|gaming|videojuego|minecraft|fortnite|gta|warthog|masterchief|meme|9gag|reddit|imgur|pinterest|deviantart|artstation|wallpaper|alphacoders|freepik|shutterstock|istock|vecteezy|flaticon|pngtree|tiktok|unsplash/i;
+// Bloquea sitios de videojuegos, memes, miniaturas de Bing (bing.com/th) y bancos con marca de agua
+const DOMINIOS_PROHIBIDOS_IMG = /bing\.com\/th|halo|xbox|playstation|nintendo|steam|epicgames|ign\.com|3djuegos|vandal|hobbyconsolas|meristation|kotaku|fandom|wikia|gamer|gaming|videojuego|minecraft|fortnite|gta|warthog|masterchief|meme|9gag|reddit|imgur|pinterest|deviantart|artstation|wallpaper|alphacoders|freepik|shutterstock|istock|vecteezy|flaticon|pngtree|tiktok|unsplash/i;
 
 let ultimoEstado = {
   foto_url: '',
@@ -79,7 +80,7 @@ let ultimoComandoTexto = '';
 let ultimoComandoTimestamp = 0;
 let indiceClaveGroq = 0;
 
-app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + JSON Blindado activo'));
+app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Fotos HD activo'));
 
 const EMOJIS_SEGUROS_META = new Set([
   '🚨', '🔴', '🟠', '🟡', '🚧', '🚔', '🚒', '🚑', '🛑',
@@ -100,7 +101,7 @@ const CONECTORES_COLGADOS = new Set([
   'DE', 'LA', 'EL', 'LOS', 'LAS', 'UN', 'UNA', 'UNOS', 'UNAS',
   'A', 'AL', 'DEL', 'EN', 'CON', 'POR', 'PARA', 'SIN', 'TRAS',
   'ANTE', 'BAJO', 'SOBRE', 'ENTRE', 'HACIA', 'HASTA', 'DESDE',
-  'Y', 'E', 'O', 'U', 'NI', 'QUE', 'SE', 'SU', 'SUS', 'LO', 'LE', 'LES', 'MAS', 'MÁS', 'MUY'
+  'Y', 'E', 'O', 'U', 'NI', 'QUE', 'SE', 'SU', 'SUS', 'LO', 'LE', 'LES', 'MAS', 'MÁS', 'MUY', 'QUE'
 ]);
 
 const PREFIJOS_COMPUESTOS = new Set([
@@ -111,7 +112,7 @@ const PREFIJOS_COMPUESTOS = new Set([
   'CASA', 'CORTE', 'BANCO', 'RIESGO', 'DÓLAR', 'DOLAR', 'RUTA',
   'SERVICIO', 'SERVICIOS', 'VIALIDAD', 'POLICÍA', 'POLICIA', 'ARMADA',
   'GRAN', 'JAVIER', 'CLAUDIO', 'CRISTINA', 'AXEL', 'PABLO', 'FERNANDO',
-  'LUIS', 'JUAN', 'MARÍA', 'MARIA', 'LA', 'EL', 'LOS', 'LAS', '28', 'VEINTIOCHO'
+  'LUIS', 'JUAN', 'MARÍA', 'MARIA', 'LA', 'EL', 'LOS', 'LAS', '28', 'VEINTIOCHO', 'PASO', 'REFORMA'
 ]);
 
 const SUFIJOS_COMPUESTOS = new Set([
@@ -120,7 +121,7 @@ const SUFIJOS_COMPUESTOS = new Set([
   'BUENA', 'RIVADAVIA', 'CRUZ', 'FUEGO', 'AIRES', 'BLANCA', 'ARENAS',
   'SECO', 'GREGORES', 'JORGE', 'PAULA', 'SANTOS', 'ROSADA', 'SUPREMA',
   'CENTRAL', 'PAÍS', 'PAIS', 'BLUE', 'OFICIAL', 'MILEI', 'VIDAL',
-  'KIRCHNER', 'KICILLOF', 'GRASSO', 'CARRIZO', 'COTILLO'
+  'KIRCHNER', 'KICILLOF', 'GRASSO', 'CARRIZO', 'COTILLO', 'ELECTORAL', 'JUDICIAL', 'LABORAL'
 ]);
 
 function limpiarPalabraSignos(p) {
@@ -301,7 +302,7 @@ function asegurarDestacadoEnTitulo(titulo, destacar) {
     idxInicio--;
   }
 
-  while (idxInicio < idxFin && ['DE', 'DEL', 'Y', 'E', 'O', 'U', 'A', 'AL', 'CON', 'POR', 'EN', 'PARA'].includes(limpiarPalabraSignos(palabrasTit[idxInicio]))) {
+  while (idxInicio < idxFin && ['DE', 'DEL', 'Y', 'E', 'O', 'U', 'A', 'AL', 'CON', 'POR', 'EN', 'PARA', 'QUE'].includes(limpiarPalabraSignos(palabrasTit[idxInicio]))) {
     idxInicio++;
   }
 
@@ -325,7 +326,7 @@ function asegurarDestacadoEnTitulo(titulo, destacar) {
 
   if (idxFin - idxInicio + 1 >= 5) {
     for (let k = idxInicio + 1; k < idxFin; k++) {
-      if (['EN', 'DE', 'DEL', 'A', 'AL', 'PARA', 'POR', 'CONTRA', 'SOBRE'].includes(limpiarPalabraSignos(palabrasTit[k]))) {
+      if (['EN', 'DE', 'DEL', 'A', 'AL', 'PARA', 'POR', 'CONTRA', 'SOBRE', 'QUE'].includes(limpiarPalabraSignos(palabrasTit[k]))) {
         const candidatoFinal = idxFin - k;
         if (candidatoFinal >= 2) {
           idxInicio = k + 1;
@@ -370,7 +371,6 @@ function obtenerListaClavesGroq() {
   return todas;
 }
 
-// PARSEADOR Y REPARADOR BLINDADO DE JSON: Nunca tira error de sintaxis aunque el modelo corte o meta comillas internas
 function parsearJsonSeguro(rawContent) {
   const texto = String(rawContent || '').trim();
   const match = texto.match(/\{[\s\S]*\}/);
@@ -385,7 +385,6 @@ function parsearJsonSeguro(rawContent) {
         .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]+/g, ' ');
       return JSON.parse(reparado);
     } catch (e2) {
-      // Rescate campo por campo por expresión regular si el JSON vino malformado o truncado
       const extraerCampo = (clave) => {
         const reg = new RegExp(`"${clave}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`, 'i');
         const m = candidato.match(reg);
@@ -464,7 +463,67 @@ async function llamarGroqChat(messages) {
   }
 }
 
-async function auditarFotoConVisionIA(dataUrl, titulo, bajada, categoria = '', metaDescripcionFoto = '') {
+// Verifica en un navegador headless real que la imagen tenga buena resolución (>=550px) y NO tenga bordes blancos alrededor
+async function verificarCalidadYDimensionesImagen(dataUrl) {
+  let browser = null;
+  try {
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    });
+    const page = await browser.newPage();
+    const resultado = await page.evaluate(async (src) => {
+      return await new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const w = img.naturalWidth || 0;
+          const h = img.naturalHeight || 0;
+          if (w < 520 || h < 320) {
+            return resolve({ valida: false, motivo: `Baja resolución (${w}x${h})` });
+          }
+
+          // Detecta si la imagen tiene un marco blanco de relleno arriba y a los costados (típico de miniaturas c=7)
+          try {
+            const c = document.createElement('canvas');
+            c.width = 60;
+            c.height = 60;
+            const ctx = c.getContext('2d');
+            ctx.drawImage(img, 0, 0, 60, 60);
+            const topData = ctx.getImageData(0, 0, 60, 6).data;
+            let blancosTop = 0;
+            const totalTop = topData.length / 4;
+            for (let i = 0; i < topData.length; i += 4) {
+              if (topData[i] > 244 && topData[i + 1] > 244 && topData[i + 2] > 244) blancosTop++;
+            }
+
+            const leftData = ctx.getImageData(0, 0, 6, 60).data;
+            let blancosLeft = 0;
+            const totalLeft = leftData.length / 4;
+            for (let i = 0; i < leftData.length; i += 4) {
+              if (leftData[i] > 244 && leftData[i + 1] > 244 && leftData[i + 2] > 244) blancosLeft++;
+            }
+
+            if (blancosTop / totalTop > 0.88 && blancosLeft / totalLeft > 0.75) {
+              return resolve({ valida: false, motivo: 'Marco blanco detectado alrededor de la foto' });
+            }
+          } catch (e) {}
+
+          resolve({ valida: true, w, h });
+        };
+        img.onerror = () => resolve({ valida: false, motivo: 'Imagen corrupta' });
+        img.src = src;
+      });
+    }, dataUrl);
+    return resultado.valida;
+  } catch (e) {
+    return true;
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
+// Audita fotos buscadas en internet (pero NUNCA rechaza una foto por tener un link con hash si no hay título descriptivo)
+async function auditarFotoConVisionIA(dataUrl, titulo, bajada, categoria = '', tituloDescriptivoFoto = '') {
   const claves = obtenerListaClavesGroq();
   const apiKey = claves[(indiceClaveGroq++) % claves.length];
 
@@ -472,51 +531,55 @@ async function auditarFotoConVisionIA(dataUrl, titulo, bajada, categoria = '', m
 SECCIÓN: "${categoria}"
 TITULAR: "${titulo}"
 BAJADA: "${bajada}"
-ORIGEN DE LA FOTO: "${metaDescripcionFoto}"
+DESCRIPCIÓN DE ORIGEN: "${tituloDescriptivoFoto}"
 
 REGLAS DE RECHAZO ESTRICTO ("aprobada": false):
-1. RECHAZAR SI ES UN PAISAJE DE MONTAÑAS, RUTA VACÍA O NATURALEZA cuando la noticia trata sobre políticos, empresarios, economía, reuniones, sesiones o judiciales.
-2. RECHAZAR si es una imagen generada por IA con personas o caras deformadas, o una captura de videojuego (Halo, soldados, ficción), meme o caricatura.
-3. RECHAZAR si es el logo genérico de un diario, un banner publicitario o tiene texto gigante encima.
-4. APROBAR ("aprobada": true) únicamente si es una fotografía periodística real y coherente que muestra al protagonista, institución, edificio oficial o escena real del hecho.
+1. RECHAZAR si tiene bordes blancos gigantes alrededor o está muy pixelada/borrosa.
+2. RECHAZAR si muestra a una persona o tema que no tiene nada que ver (ej: el Papa cuando la noticia es de las PASO en el Senado, o un paisaje de montañas cuando es de política).
+3. RECHAZAR si es de un videojuego, meme, caricatura, logo de diario o tiene caras deformadas por IA.
+4. APROBAR ("aprobada": true) solo si es una fotografía periodística nítida, a pantalla completa y coherente con el protagonista o escenario real.
 
 Devolvé SOLO este JSON:
 {
   "aprobada": true o false,
   "motivo": "Explicación breve",
-  "busqueda_corregida": "Nombre de la persona pública más conocida de la nota o institución (ej: Claudio Vidal Gobernador Santa Cruz)"
+  "busqueda_corregida": "Consulta física concreta (ej: Senado Congreso de la Nacion Argentina recinto)"
 }`;
 
   try {
-    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      signal: AbortSignal.timeout(8500),
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-        temperature: 0.1,
-        max_tokens: 500,
-        response_format: { type: 'json_object' },
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: promptVision },
-            { type: 'image_url', image_url: { url: dataUrl } }
-          ]
-        }]
-      })
-    });
+    // Solo enviamos a Llama-4-Scout si el base64 no supera el límite de tamaño de Groq (~350KB)
+    if (dataUrl.length < 460000) {
+      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        signal: AbortSignal.timeout(8500),
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+          temperature: 0.1,
+          max_tokens: 450,
+          response_format: { type: 'json_object' },
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: promptVision },
+              { type: 'image_url', image_url: { url: dataUrl } }
+            ]
+          }]
+        })
+      });
 
-    if (resp.ok) {
-      const data = await resp.json();
-      const raw = data?.choices?.[0]?.message?.content || '{}';
-      return parsearJsonSeguro(raw);
+      if (resp.ok) {
+        const data = await resp.json();
+        const raw = data?.choices?.[0]?.message?.content || '{}';
+        return parsearJsonSeguro(raw);
+      }
     }
 
-    if (metaDescripcionFoto) {
+    // Respaldo de texto SOLO cuando tenemos un título descriptivo real de la imagen (nunca cuando es solo una URL encriptada)
+    if (tituloDescriptivoFoto && !tituloDescriptivoFoto.startsWith('http')) {
       return await llamarGroqChat([{
         role: 'user',
-        content: `Sos el Auditor Fotográfico de un diario. Evaluá si una imagen con esta descripción ("${metaDescripcionFoto}") sirve para la noticia "${categoria}: ${titulo} - ${bajada}". Rechazá si es un paisaje sin relación, videojuego, meme o tema ajeno. Devolvé JSON: {"aprobada": true o false, "busqueda_corregida": "consulta mejorada con el protagonista principal"}`
+        content: `Sos el Auditor Fotográfico de un diario. Evaluá si una foto titulada "${tituloDescriptivoFoto}" es coherente para ilustrar la noticia "${categoria}: ${titulo} - ${bajada}". Rechazá si habla de otro evento ajeno (ej: el Papa en una nota sobre elecciones PASO, o un paisaje en una nota política). Devolvé JSON: {"aprobada": true o false, "busqueda_corregida": "consulta mejorada"}`
       }]);
     }
     return { aprobada: true };
@@ -642,6 +705,17 @@ async function resolverUrlOriginalDesdeBuscador(titulo, medio = '') {
   return '';
 }
 
+// Convierte URLs de imágenes de diarios (WordPress, La Nación, Clarín, Infobae) a su versión de máxima resolución
+function expandirUrlImagenAltaResolucion(url) {
+  if (!url) return '';
+  let limpia = url
+    .replace(/&amp;/g, '&')
+    .replace(/-\d{2,3}x\d{2,3}(?=\.(?:jpg|jpeg|png|webp))/i, '') // Quita recortes chicos de WordPress como -300x200.jpg
+    .replace(/([?&](?:w|width)=)\d{2,3}\b/gi, '$11200')
+    .replace(/([?&](?:h|height)=)\d{2,3}\b/gi, '$1800');
+  return limpia;
+}
+
 async function extraerNoticiaDeLink(url, tituloParaResolver = '', medioParaResolver = '') {
   try {
     let urlFinal = url || '';
@@ -663,7 +737,8 @@ async function extraerNoticiaDeLink(url, tituloParaResolver = '', medioParaResol
 
     const ogImageMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
                          html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ||
-                         html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i) ||
+                         html.match(/<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["']/i) ||
+                         html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["']/i) ||
                          html.match(/<img[^>]+class=["'][^"']*wp-post-image[^"']*["'][^>]+src=["']([^"']+)["']/i) ||
                          html.match(/<article[\s\S]*?<img[^>]+(?:data-src|src)=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i);
 
@@ -695,6 +770,7 @@ async function extraerNoticiaDeLink(url, tituloParaResolver = '', medioParaResol
       const origin = new URL(urlFinal).origin;
       fotoUrl = `${origin}${fotoUrl}`;
     }
+    fotoUrl = expandirUrlImagenAltaResolucion(fotoUrl);
 
     const dominio = new URL(urlFinal).hostname.replace('www.', '').split('.')[0].toUpperCase();
     const tituloLimpio = (ogTitleMatch ? ogTitleMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 220);
@@ -772,9 +848,8 @@ async function leerUnFeedRss(fuente) {
 
       const imgMatch = itemXml.match(/<enclosure[^>]+url=["']([^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i) ||
                        itemXml.match(/<media:content[^>]+url=["']([^"']+)["']/i) ||
-                       itemXml.match(/<media:thumbnail[^>]+url=["']([^"']+)["']/i) ||
-                       itemXml.match(/<img[^>]+src=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i) ||
-                       (contentMatch && contentMatch[1].match(/<img[^>]+src=["'](https?:\/\/[^"']+)["']/i));
+                       (contentMatch && contentMatch[1].match(/<img[^>]+src=["'](https?:\/\/[^"']+)["']/i)) ||
+                       itemXml.match(/<img[^>]+src=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i);
 
       const titulo = (tituloMatch ? tituloMatch[1] : '')
         .replace(/<!\[CDATA\[|\]\]>/g, '')
@@ -796,7 +871,7 @@ async function leerUnFeedRss(fuente) {
         link,
         medio,
         categoriaOrigen: fuente.categoria,
-        fotoRss: imgMatch ? imgMatch[1] : '',
+        fotoRss: imgMatch ? expandirUrlImagenAltaResolucion(imgMatch[1]) : '',
         bajadaRss,
         fechaPub,
         antiguedadTexto: antiguedad.texto,
@@ -818,7 +893,7 @@ function ordenarCandidatasRelevantes(candidatas, ignorarHistorial = false) {
 
   const regexDescartar = /pron[óo]stico de lluvia|pron[óo]stico del tiempo|c[óo]mo estar[áa] el clima|clima hoy en|tiempo hoy en|qu[ée] dice el servicio meteorol[óo]gico para hoy|hor[óo]scopo|quiniela|loter[íi]a|crucigrama|efem[ée]rides|receta|tarot|predicciones|a qu[ée] hora juega|d[óo]nde ver en vivo/i;
   const regexPrioridadMaxima = /caleta olivia|santa cruz|claudio vidal|ruta 3|ruta nacional 3|ram[óo]n santos|zona norte|pico truncado|las heras|r[íi]o gallegos|ypf|petr[óo]leo|servicios p[úu]blicos|distrigas|acueducto/i;
-  const regexImpactoNacional = /milei|d[óo]lar|inflaci[óo]n|anses|jubilados|combustible|nafta|sueldo|paro|corte|tarifa|impuesto|banco central|selecci[óo]n argentina|boca|river|messi|colapinto|gobierno|empresarios|salarios|diputados|senado/i;
+  const regexImpactoNacional = /milei|d[óo]lar|inflaci[óo]n|anses|jubilados|combustible|nafta|sueldo|paro|corte|tarifa|impuesto|banco central|selecci[óo]n argentina|boca|river|messi|colapinto|gobierno|empresarios|salarios|diputados|senado|reforma|paso/i;
   const regexBombasEspectaculos = /wanda|icardi|china su[áa]rez|tinelli|susana|mirtha|gran hermano|lam|esc[áa]ndalo|separaci[óo]n|denuncia|luck ra|tiago pzk|la joaqui|duki|mar[íi]a becerra|l-gante|occhiato|granados/i;
 
   const disponibles = candidatas.filter(c => {
@@ -881,12 +956,15 @@ function construirUrlPollinationsHD(prompt) {
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(promptSeguroSinCaras)}?width=1080&height=1080&nologo=true&seed=${seed}`;
 }
 
-async function descargarYValidarImagen(url, timeoutMs = 5500, metaDesc = '') {
+// Exige al menos 22 KB de peso real y bloquea cualquier miniatura de bing.com/th
+async function descargarYValidarImagen(url, timeoutMs = 5500, tituloDescriptivo = '') {
   if (!url) return null;
-  if (url.startsWith('data:image/')) return { url, dataUrl: url, metaDesc };
+  if (url.startsWith('data:image/')) return { url, dataUrl: url, tituloDescriptivo };
   if (!url.startsWith('http')) return null;
-  if (/logo|favicon|avatar|placeholder|default|icon|sprite|blank|1x1|banner-site/i.test(url)) return null;
-  if (DOMINIOS_PROHIBIDOS_IMG.test(url) || DOMINIOS_PROHIBIDOS_IMG.test(metaDesc)) return null;
+  if (/logo|favicon|avatar|placeholder|default|icon|sprite|blank|1x1|banner-site|thumb/i.test(url)) return null;
+  if (DOMINIOS_PROHIBIDOS_IMG.test(url) || DOMINIOS_PROHIBIDOS_IMG.test(tituloDescriptivo)) return null;
+
+  const urlExpandida = expandirUrlImagenAltaResolucion(url);
 
   const intentarDescarga = async (targetUrl) => {
     const resp = await fetch(targetUrl, {
@@ -901,50 +979,24 @@ async function descargarYValidarImagen(url, timeoutMs = 5500, metaDesc = '') {
     const contentType = (resp.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
     if (!contentType.startsWith('image/') || contentType.includes('svg')) return null;
     const buffer = Buffer.from(await resp.arrayBuffer());
-    if (buffer.length < 10000 || buffer.length > 9 * 1024 * 1024) return null;
-    return { url, dataUrl: `data:${contentType};base64,${buffer.toString('base64')}`, bytes: buffer.length, metaDesc: metaDesc || url };
+    if (buffer.length < 22000 || buffer.length > 9 * 1024 * 1024) return null;
+    return {
+      url: urlExpandida,
+      dataUrl: `data:${contentType};base64,${buffer.toString('base64')}`,
+      bytes: buffer.length,
+      tituloDescriptivo
+    };
   };
 
   try {
-    const urlCloudinary = optimizarFotoConCloudinary(url, false, 1080);
-    if (urlCloudinary !== url) {
+    const urlCloudinary = optimizarFotoConCloudinary(urlExpandida, false, 1080);
+    if (urlCloudinary !== urlExpandida) {
       const desdeCloud = await intentarDescarga(urlCloudinary).catch(() => null);
       if (desdeCloud) return desdeCloud;
     }
-    return await intentarDescarga(url);
+    return await intentarDescarga(urlExpandida);
   } catch (e) {
     return null;
-  }
-}
-
-async function buscarFotoEnBingNewsRss(consulta) {
-  try {
-    const q = consulta.replace(/orcolandia|kukardo|mandril|casta/gi, '').trim();
-    const rssUrl = `https://www.bing.com/news/search?q=${encodeURIComponent(q + ' Argentina')}&format=rss`;
-    const resp = await fetch(rssUrl, {
-      signal: AbortSignal.timeout(4500),
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
-    if (!resp.ok) return [];
-    const xml = await resp.text();
-    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map(m => m[1]);
-    const candidatas = [];
-
-    for (const item of items.slice(0, 6)) {
-      const imgMatch = item.match(/<News:Image>([^<]+)<\/News:Image>/i) ||
-                       item.match(/url=["'](https?:\/\/[^"']+)["']/i);
-      const titMatch = item.match(/<title>([^<]+)<\/title>/i);
-      if (imgMatch && imgMatch[1]) {
-        let imgUrl = imgMatch[1].replace(/&amp;/g, '&').trim();
-        if (imgUrl.includes('bing.com/th')) {
-          imgUrl = imgUrl.replace(/&w=[0-9]+&h=[0-9]+/i, '') + '&w=1080&h=1080&c=7';
-        }
-        candidatas.push({ url: imgUrl, desc: titMatch ? titMatch[1] : q });
-      }
-    }
-    return candidatas;
-  } catch (e) {
-    return [];
   }
 }
 
@@ -971,19 +1023,16 @@ async function buscarFotoEnWikipedia(consulta) {
   }
 }
 
+// Busca EXCLUSIVAMENTE fotografías grandes (filterui:imagesize-large + photo-photo) sin usar jamás miniaturas de bing.com/th
 async function obtenerCandidatasFotoWeb(consulta) {
   if (!consulta || consulta.trim().length < 3) return [];
   const consultaLimpia = consulta.replace(/orcolandia|kukardo|mandril|casta/gi, '').trim();
 
-  const [desdeBingNews, desdeWiki] = await Promise.all([
-    buscarFotoEnBingNewsRss(consultaLimpia),
-    buscarFotoEnWikipedia(consultaLimpia)
-  ]);
-
-  const itemsEncontrados = [...desdeBingNews, ...desdeWiki];
+  const desdeWiki = await buscarFotoEnWikipedia(consultaLimpia);
+  const itemsEncontrados = [...desdeWiki];
 
   try {
-    const bingUrl = `https://www.bing.com/images/async?q=${encodeURIComponent(consultaLimpia + ' Argentina prensa')}&first=0&count=12&mmasync=1`;
+    const bingUrl = `https://www.bing.com/images/async?q=${encodeURIComponent(consultaLimpia + ' Argentina')}&qft=+filterui:imagesize-large+filterui:photo-photo&first=0&count=12&mmasync=1`;
     const resp = await fetch(bingUrl, {
       signal: AbortSignal.timeout(4500),
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
@@ -1001,7 +1050,7 @@ async function obtenerCandidatasFotoWeb(consulta) {
       const tituloImg = m[2] || consultaLimpia;
       if (murl && !vistos.has(murl) && /\.(?:jpg|jpeg|png|webp)(?:\?|$)/i.test(murl) && !DOMINIOS_PROHIBIDOS_IMG.test(murl) && !DOMINIOS_PROHIBIDOS_IMG.test(tituloImg)) {
         vistos.add(murl);
-        itemsEncontrados.push({ url: murl, desc: `${tituloImg} (${murl})` });
+        itemsEncontrados.push({ url: murl, desc: tituloImg });
       }
     }
   } catch (e) {}
@@ -1010,6 +1059,7 @@ async function obtenerCandidatasFotoWeb(consulta) {
   return descargadas.filter(Boolean);
 }
 
+// Prioriza SIEMPRE la foto og:image original HD del diario (verificando que mida >=520px y no tenga bordes blancos)
 async function auditarYResolverImagen({
   fotoCandidataUrl,
   esFotoManualDelEditor,
@@ -1025,14 +1075,14 @@ async function auditarYResolverImagen({
     if (validadaEditor) return { urlFinal: validadaEditor.dataUrl, urlOriginal: validadaEditor.url, fuenteAuto: 'GENTILEZA / ARCHIVO', esFotoRealVerificada: true };
   }
 
+  // Si la foto viene de la propia nota del diario (og:image / RSS), verificamos su calidad técnica (dimensiones HD y sin bordes blancos) y la usamos directo
   if (fotoCandidataUrl && !forzarBusquedaNueva) {
-    const validada = await descargarYValidarImagen(fotoCandidataUrl, 5500, fotoCandidataUrl);
-    if (validada) {
-      const auditoria = await auditarFotoConVisionIA(validada.dataUrl, titulo, bajada, categoria, validada.metaDesc);
-      if (auditoria.aprobada !== false) {
-        return { urlFinal: validada.dataUrl, urlOriginal: validada.url, fuenteAuto: '', esFotoRealVerificada: true };
+    const validadaNota = await descargarYValidarImagen(fotoCandidataUrl, 6000, '');
+    if (validadaNota) {
+      const tieneCalidadHD = await verificarCalidadYDimensionesImagen(validadaNota.dataUrl);
+      if (tieneCalidadHD) {
+        return { urlFinal: validadaNota.dataUrl, urlOriginal: validadaNota.url, fuenteAuto: '', esFotoRealVerificada: true };
       }
-      if (auditoria.busqueda_corregida) busquedasSugeridas.unshift(auditoria.busqueda_corregida);
     }
   }
 
@@ -1041,7 +1091,10 @@ async function auditarYResolverImagen({
   for (const queryWeb of colaConsultas) {
     const candidatasWeb = await obtenerCandidatasFotoWeb(queryWeb);
     for (const cand of candidatasWeb) {
-      const veredicto = await auditarFotoConVisionIA(cand.dataUrl, titulo, bajada, categoria, cand.metaDesc);
+      const tieneCalidadHD = await verificarCalidadYDimensionesImagen(cand.dataUrl);
+      if (!tieneCalidadHD) continue;
+
+      const veredicto = await auditarFotoConVisionIA(cand.dataUrl, titulo, bajada, categoria, cand.tituloDescriptivo);
       if (veredicto.aprobada !== false) {
         return { urlFinal: cand.dataUrl, urlOriginal: cand.url, fuenteAuto: 'ARCHIVO / PRENSA', esFotoRealVerificada: true };
       }
@@ -1058,7 +1111,7 @@ async function auditarYResolverImagen({
 }
 
 // ============================================================================
-// CEREBRO EDITORIAL (JSON PLANO SIN ARRAYS PARA CERO ERRORES DE SINTAXIS)
+// CEREBRO EDITORIAL (JSON PLANO SIN ARRAYS Y SINTAXIS DE TITULARES IMPECABLE)
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
@@ -1073,9 +1126,9 @@ REGLA DE ORO DE VERIFICACIÓN Y GEOGRAFÍA:
 - DESCARTE SILENCIOSO ("descartar": true): Si el texto recibido carece de información verificable suficiente o es relleno automático, devolvé "descartar": true.
 - PROHIBIDO INVENTAR QUE ALGO FUE EN CALETA OLIVIA: Mencioná a Caleta Olivia ÚNICAMENTE cuando el hecho ocurra allí.
 
-REGLA 1 — PALABRAS DESTACADAS EN EL TÍTULO ("destacar"):
-- Debe ser una FRASE COMPLETA CON SENTIDO PROPIO Y AUTÓNOMO de 2 a 4 palabras consecutivas exactas dentro de "titulo".
-- PROHIBIDO CORTAR NOMBRES PROPIOS O LUGARES COMPUESTOS AL MEDIO (ej: "RÍO GALLEGOS", "CALETA OLIVIA", "POLÍTICAS DE VIDAL", "SANTA CRUZ", "RUTA NACIONAL 3").
+REGLA 1 — TITULAR CON SINTAXIS CLARA Y PALABRAS DESTACADAS ("titulo" y "destacar"):
+- En "titulo": Redactá un titular periodístico con sintaxis natural y clara de 5 a 8 palabras en MAYÚSCULAS SIN EMOJIS. Si ponés el tema adelante, usá dos puntos (ejemplo: "PASO 2027: EL GOBIERNO BUSCA VOTOS PARA LA REFORMA" en vez de "PASO 2027 VOTOS QUE NEGOCIA REFORMA").
+- En "destacar": Elegí una FRASE COMPLETA CON SENTIDO PROPIO Y AUTÓNOMO de 2 a 4 palabras consecutivas exactas dentro de "titulo" (ejemplo: "SUSPENSIÓN DE LAS PASO", "REFORMA ELECTORAL", "RÍO GALLEGOS", "CALETA OLIVIA"). Prohibido cortar nombres propios al medio o dejar conectores colgados ("QUE", "DE", "LA").
 
 REGLA 2 — SUBTÍTULO DE LA PLACA ("bajada"): COHERENCIA Y ESTÉTICA DE 3 A 4 RENGLONES:
 - Redactá un subtítulo periodístico coherente, fluido y natural con todos sus artículos (de 20 a 32 palabras) que forme 3 renglones ideales o hasta 4 renglones bien cerrados.
@@ -1091,9 +1144,9 @@ Redactá una NOTA PERIODÍSTICA COMPLETA Y DESGLOSADA POR PUNTOS en texto plano 
 7. BLOQUE DE 8 A 10 HASHTAGS EN MINÚSCULAS.
 
 REGLA 4 — BÚSQUEDA FOTOGRÁFICA ESCALONADA EN 3 NIVELES:
-- "busqueda_foto_web": La figura pública o protagonista principal + su cargo/provincia (ej: "Claudio Vidal gobernador Santa Cruz").
-- "busqueda_foto_respaldo": SOLO el nombre de la persona más famosa o la institución/empresa más conocida de la nota (ej: "Claudio Vidal" o "YPF Santa Cruz" o "Javier Milei").
-- "busqueda_foto_institucional": El edificio oficial o lugar físico real del tema (ej: "Casa de Gobierno Rio Gallegos Santa Cruz" o "Congreso de la Nacion Argentina").
+- "busqueda_foto_web": El escenario o protagonista exacto del hecho actual (ej: "Senado Congreso de la Nacion Argentina recinto" o "Claudio Vidal gobernador Santa Cruz").
+- "busqueda_foto_respaldo": Institución o figura principal sin mezclar temas viejos (ej: "Congreso de la Nacion Argentina" o "Casa Rosada Buenos Aires").
+- "busqueda_foto_institucional": Edificio oficial o lugar físico del hecho.
 
 LISTA BLANCA DE EMOJIS PERMITIDOS EN "copy":
 🚨 🔴 🟠 🟡 🚧 🚔 🚒 🚑 🛑 💨 🌀 🌊 💧 ☔ ⛄ ⛅ ⚡ 🔥 💰 💵 📈 📉 📊 ⛽ 🏭 🚜 🚛 🚢 🐟 📢 📣 📰 📋 📄 📜 🏥 🏫 🎓 👷 🤝 📍 📅 🕒 ⚽ 🏆 🏅 🎭 🎶 👇 👉 📲 💬 ✅ ❌
@@ -1103,16 +1156,16 @@ Devolvé ÚNICAMENTE este objeto JSON plano (sin arrays adentro):
   "descartar": false,
   "motivo_descarte": "",
   "categoria": "SECCIÓN / SUBTEMA EN MAYÚSCULAS SIN EMOJIS",
-  "titulo": "TITULAR EN MAYÚSCULAS SIN EMOJIS (5 a 8 palabras)",
+  "titulo": "TITULAR EN MAYÚSCULAS CON SINTAXIS CLARA Y SIN EMOJIS (5 a 8 palabras)",
   "destacar": "FRASE COMPLETA CON SENTIDO PROPIO DENTRO DEL TITULO",
   "bajada": "Subtítulo periodístico coherente, verificado y estético en castellano SIN EMOJIS (de 20 a 32 palabras para formar 3 a 4 renglones).",
   "dato_clave": "Cifra central si existe, o vacío",
   "autor_cita": "Nombre y cargo si hay cita, o vacío",
   "fuente_credito": "Crédito corto en MAYÚSCULAS",
   "copy": "Nota periodística extensa y verificada (1300 a 2050 caracteres, máximo 2200) con la estructura: TITULAR + 2 emojis\\n\\nCopete inicial\\n\\nSubtema 1: Desarrollo...\\n\\nSubtema 2: Desarrollo...\\n\\nSubtema 3: Desarrollo...\\n\\nPárrafo de resolución.\\n\\nToda la cobertura en @elregistrosur.\\n\\n¿Pregunta de debate? Te leemos en comentarios 👇\\n\\n#hashtags",
-  "busqueda_foto_web": "Figura pública principal o protagonista + cargo/lugar",
-  "busqueda_foto_respaldo": "Nombre de la persona más famosa o institución principal de la noticia",
-  "busqueda_foto_institucional": "Edificio oficial o escenario físico real del hecho",
+  "busqueda_foto_web": "Escenario o protagonista específico de la noticia",
+  "busqueda_foto_respaldo": "Institución o figura principal",
+  "busqueda_foto_institucional": "Edificio oficial o escenario físico real",
   "prompt_imagen_ia": "Wide angle exterior photojournalism prompt in English showing the real physical building or setting, NO PEOPLE, NO FACES, NO TEXT"
 }`;
 
@@ -1141,7 +1194,6 @@ Devolvé ÚNICAMENTE este objeto JSON plano (sin arrays adentro):
   return parsed;
 }
 
-// Generador exclusivo para cuando se pide el botón .carrusel
 async function generarSlidesCarruselConIA(tituloBase, copyBase) {
   try {
     const promptCarrusel = `A partir de esta noticia ("${tituloBase}" - ${String(copyBase || '').slice(0, 1000)}), redactá 3 placas en castellano para un carrusel de Instagram (Placa 1: Portada, Placa 2: Datos clave y contexto, Placa 3: Impacto y definiciones).
@@ -1168,7 +1220,7 @@ Devolvé ÚNICAMENTE este JSON plano:
 }
 
 // ============================================================================
-// MOTOR GRÁFICO 2K RETINA + ESTÉTICA DE 3 A 4 RENGLONES EN SUBTÍTULO
+// MOTOR GRÁFICO 2K RETINA + FULL BLEED (CERO BORDES BLANCOS)
 // ============================================================================
 
 async function estamparMarcaDeAguaFoto(fotoUrl, textoCredito = 'EXCLUSIVO') {
@@ -1345,6 +1397,11 @@ async function renderizarFlyer({
             img.parentElement.style.backgroundSize = 'cover';
             img.parentElement.style.backgroundPosition = 'center';
             img.parentElement.style.backdropFilter = 'blur(28px)';
+          } else {
+            img.style.objectFit = 'cover';
+            img.style.objectPosition = 'center top';
+            img.style.width = '100%';
+            img.style.height = '100%';
           }
         }
       }
@@ -1354,6 +1411,8 @@ async function renderizarFlyer({
           const bg = window.getComputedStyle(el).backgroundImage;
           if (bg && bg !== 'none' && (bg.includes('unsplash') || bg.includes('http') || bg.includes('data:image'))) {
             el.style.backgroundImage = `url("${url}")`;
+            el.style.backgroundSize = 'cover';
+            el.style.backgroundPosition = 'center top';
           }
         });
       }
@@ -2536,4 +2595,4 @@ app.get('/ultimo-borrador', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`El Registro Sur 2K + JSON Blindado listo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`El Registro Sur 2K + Fotos HD listo en puerto ${PORT}`));
