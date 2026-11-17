@@ -61,7 +61,6 @@ let ultimoEstado = {
   carrusel_buffers: []
 };
 
-// Cola de hasta 5 borradores para que las alertas del radar no se pisen entre sí
 const colaBorradores = [];
 
 function guardarEnColaBorradores(nuevoEstado) {
@@ -117,54 +116,42 @@ function filtrarEmojisSegurosRedes(texto) {
     .trim();
 }
 
-// Rotación instantánea de modelos en Groq: si gpt-oss-120b da 429, pasa al instante a llama-3.3-70b-versatile sin demorar a Make
-async function llamarGroqChat(messages, timeoutMs = 14000) {
+// Llamada única a openai/gpt-oss-120b con espera inteligente si hay límite 429
+async function llamarGroqChat(messages) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('Falta configurar GROQ_API_KEY en Render.');
 
-  const modelosRespaldo = [
-    'openai/gpt-oss-120b',
-    'llama-3.3-70b-versatile',
-    'llama-3.1-8b-instant'
-  ];
+  for (let intento = 1; intento <= 3; intento++) {
+    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      signal: AbortSignal.timeout(15000),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-120b',
+        temperature: 0.3,
+        response_format: { type: 'json_object' },
+        messages
+      })
+    });
 
-  let ultimoError = '';
-  for (const modelo of modelosRespaldo) {
-    try {
-      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        signal: AbortSignal.timeout(timeoutMs),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: modelo,
-          response_format: { type: 'json_object' },
-          messages
-        })
-      });
-
-      if (resp.status === 429 || resp.status >= 500) {
-        ultimoError = `Groq (${modelo}) status ${resp.status}`;
-        console.warn(`${ultimoError} -> cambiando automáticamente al siguiente modelo...`);
-        continue;
-      }
-
-      if (!resp.ok) {
-        ultimoError = await resp.text();
-        continue;
-      }
-
-      const data = await resp.json();
-      const content = data?.choices?.[0]?.message?.content;
-      if (content) return JSON.parse(content);
-    } catch (e) {
-      ultimoError = e.message;
+    if (resp.status === 429 && intento < 3) {
+      const retryHeader = parseInt(resp.headers.get('retry-after') || '0', 10);
+      const esperaMs = retryHeader > 0 ? Math.min(retryHeader * 1000, 7000) : intento * 3500;
+      console.warn(`Cupo Groq 429 alcanzado. Esperando ${esperaMs}ms (intento ${intento}/3)...`);
+      await new Promise(r => setTimeout(r, esperaMs));
       continue;
     }
+
+    if (!resp.ok) {
+      throw new Error(`Error de Groq (${resp.status}): ${await resp.text()}`);
+    }
+
+    const data = await resp.json();
+    return JSON.parse(data?.choices?.[0]?.message?.content);
   }
-  throw new Error(`Error comunicando con Groq: ${ultimoError}`);
 }
 
 function generarTecladoTactil() {
@@ -322,7 +309,7 @@ async function buscarContextoEnGoogleNews(consulta) {
 }
 
 // ============================================================================
-// MONITOR DE LOS 21 PORTALES (REGIONALES + NACIONALES + ESPECTÁCULOS VIRALES)
+// MONITOR DE LOS 21 PORTALES + CURADOR RÁPIDO SIN GASTAR CUPO DE GROQ
 // ============================================================================
 
 async function consultarRssGooglePorSitios(dominios, ventanaTiempo = '4h', categoriaOrigen = 'general') {
@@ -345,41 +332,30 @@ async function consultarRssGooglePorSitios(dominios, ventanaTiempo = '4h', categ
   }
 }
 
-async function seleccionarNoticiaRelevanteConIA(candidatas) {
-  if (candidatas.length === 0) return null;
+function seleccionarNoticiaRelevante(candidatas) {
+  if (!candidatas || candidatas.length === 0) return null;
 
-  const listaFormateada = candidatas
-    .slice(0, 26)
-    .map((c, idx) => `${idx}: [${c.categoriaOrigen.toUpperCase()} | ${c.medio}] ${c.titulo}`)
-    .join('\n');
+  const regexDescartar = /hor[óo]scopo|quiniela|loter[íi]a|crucigrama|efem[ée]rides|receta| tarot |predicciones/i;
+  const regexPrioridadMaxima = /caleta olivia|santa cruz|claudio vidal|ruta 3|ruta nacional 3|ram[óo]n santos|zona norte|pico truncado|las heras|r[íi]o gallegos|ypf|petr[óo]leo|servicios p[úu]blicos|distrigas|acueducto/i;
+  const regexImpactoNacional = /milei|d[óo]lar|inflaci[óo]n|anses|jubilados|combustible|nafta|sueldo|paro|corte|tarifa|impuesto|banco central|selecci[óo]n argentina|boca|river|messi|colapinto/i;
+  const regexBombasEspectaculos = /wanda|icardi|china su[áa]rez|tinelli|susana|mirtha|gran hermano|lam|esc[áa]ndalo|separaci[óo]n|denuncia|luck ra|tiago pzk|la joaqui|duki|mar[íi]a becerra|l-gante|occhiato|granados/i;
 
-  const promptCurador = `Sos el Director Periodístico de 'El Registro Sur' (Caleta Olivia, Santa Cruz). Redactá estrictamente en castellano.
-Revisá estos titulares recientes de nuestros 21 portales monitoreados y elegí ÚNICAMENTE la noticia MÁS IMPORTANTE, VIRAL O RELEVANTE para publicar ahora.
+  const puntuadas = candidatas
+    .filter(c => !regexDescartar.test(c.titulo))
+    .map(c => {
+      let puntos = 0;
+      if (regexPrioridadMaxima.test(c.titulo)) puntos += 50;
+      if (c.categoriaOrigen === 'regional') puntos += 25;
+      if (regexImpactoNacional.test(c.titulo)) puntos += 30;
+      if (c.categoriaOrigen === 'espectaculos') {
+        puntos += regexBombasEspectaculos.test(c.titulo) ? 28 : -20;
+      }
+      return { ...c, puntos };
+    })
+    .filter(c => c.puntos > 0)
+    .sort((a, b) => b.puntos - a.puntos);
 
-CRITERIOS DE SELECCIÓN ESTRICTOS:
-1. REGIONAL Y NACIONAL DE ALTO IMPACTO: Priorizar noticias de Caleta Olivia, Zona Norte, Ruta Nacional N° 3, actividad petrolera/energética/pesquera en Santa Cruz, decisiones del Gobierno Provincial (Claudio Vidal), economía argentina de impacto directo (dólar, inflación, combustibles, tarifas, ANSES, leyes clave) o eventos deportivos mayores (Selección Argentina, Boca/River, referentes patagónicos).
-2. ESPECTÁCULOS Y CHISMES VIRALES: Aceptar ÚNICAMENTE bombas mediáticas, escándalos judiciales, rupturas o cruces virales de figuras masivas de primera línea en Argentina (ej. Wanda Nara, Mauro Icardi, China Suárez, Tinelli, Susana Giménez, Mirtha Legrand, Gran Hermano, referentes top del streaming como Migue Granados u Occhiato, o artistas urbanos como Luck Ra, Tiago PZK, La Joaqui, Duki, María Becerra, L-Gante).
-3. DESCARTAR SIEMPRE: Horóscopos, notas de relleno de panelistas menores, clickbait sin noticia real o accidentes viales menores en otras provincias lejanas.
-4. Si NINGUNA noticia de la lista tiene verdadera relevancia o impacto viral hoy, devolvé "indice": -1.
-
-Titulares disponibles:
-${listaFormateada}
-
-Devolvé ÚNICAMENTE este JSON:
-{
-  "indice": 0,
-  "motivo": "Por qué es importante y relevante"
-}`;
-
-  try {
-    const resJson = await llamarGroqChat([{ role: 'user', content: promptCurador }], 10000);
-    if (typeof resJson.indice === 'number' && resJson.indice >= 0 && candidatas[resJson.indice]) {
-      return candidatas[resJson.indice];
-    }
-    return null;
-  } catch (e) {
-    return candidatas[0];
-  }
+  return puntuadas[0] || candidatas[0];
 }
 
 async function obtenerDatosClimaCaleta() {
@@ -434,126 +410,9 @@ async function descargarYValidarImagen(url) {
     const buffer = Buffer.from(await resp.arrayBuffer());
     if (buffer.length < 18000 || buffer.length > 8 * 1024 * 1024) return null;
 
-    const mime = contentType.split(';')[0].trim();
-    return {
-      url,
-      dataUrl: `data:${mime};base64,${buffer.toString('base64')}`,
-      bytes: buffer.length
-    };
+    return { url, bytes: buffer.length };
   } catch (e) {
     return null;
-  }
-}
-
-async function auditarCoherenciaConVision(imagenValidada, titulo, bajada, categoria) {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey || !imagenValidada) {
-    return { aprobada: false, razon: 'Sin imagen válida para auditar' };
-  }
-
-  const promptAuditor = `Sos el Auditor Visual Jefe del diario digital 'El Registro Sur'. Respondé estrictamente en castellano.
-Analizá la imagen adjunta y comparala con esta noticia:
-- SECCIÓN: ${categoria}
-- TITULAR: ${titulo}
-- BAJADA: ${bajada}
-
-Criterios estrictos:
-1. RECHAZAR si es un logo genérico de un diario/canal, una placa con mucho texto superpuesto, una captura borrosa o un gráfico abstracto sin relación.
-2. RECHAZAR si el contenido visual contradice la noticia o muestra a una persona totalmente ajena al tema.
-3. APROBAR si muestra el lugar, protagonista, actividad o escena periodística coherente con el titular y tiene nitidez aceptable.
-
-Devolvé ÚNICAMENTE este JSON:
-{
-  "aprobada": true o false,
-  "razon": "Explicación breve en castellano",
-  "busqueda_web": "3 a 5 palabras clave en castellano para buscar una foto real de prensa en internet si fue rechazada",
-  "prompt_ia_corregido": "Detailed photorealistic news photography prompt in English (20 words, natural lighting, sharp focus, no text or watermarks)"
-}`;
-
-  const modelosVision = [
-    'meta-llama/llama-4-scout-17b-16e-instruct',
-    'llama-3.2-90b-vision-preview'
-  ];
-
-  for (const modelo of modelosVision) {
-    try {
-      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        signal: AbortSignal.timeout(10000),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: modelo,
-          response_format: { type: 'json_object' },
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: promptAuditor },
-                { type: 'image_url', image_url: { url: imagenValidada.dataUrl } }
-              ]
-            }
-          ]
-        })
-      });
-
-      if (!resp.ok) continue;
-      const data = await resp.json();
-      return JSON.parse(data?.choices?.[0]?.message?.content);
-    } catch (e) {
-      continue;
-    }
-  }
-
-  return { aprobada: true, razon: 'Aprobada por validación técnica' };
-}
-
-async function auditarDisenoPlacaConVision(imageBuffer) {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey || !imageBuffer) return { prolija: true };
-
-  const dataUrl = `data:image/png;base64,${imageBuffer.toString('base64')}`;
-  const promptDiseno = `Sos el Director de Arte y Control de Calidad Tipográfica de 'El Registro Sur'.
-Inspeccioná esta placa periodística terminada y verificá ÚNICAMENTE estos defectos gráficos:
-1. Emojis, banderas o cuadraditos de carácter roto (□) en el título o subtítulo.
-2. Texto en "forma de pistolita" (una línea superior muy larga y una última línea diminuta con 1 sola palabra, número o letra colgada abajo).
-3. Textos superpuestos o cortados.
-
-Devolvé ÚNICAMENTE este JSON:
-{
-  "prolija": true o false,
-  "defecto": "Descripción corta en castellano si prolija es false, o vacío"
-}`;
-
-  try {
-    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      signal: AbortSignal.timeout(9000),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: promptDiseno },
-              { type: 'image_url', image_url: { url: dataUrl } }
-            ]
-          }
-        ]
-      })
-    });
-    if (!resp.ok) return { prolija: true };
-    const data = await resp.json();
-    return JSON.parse(data?.choices?.[0]?.message?.content);
-  } catch (e) {
-    return { prolija: true };
   }
 }
 
@@ -594,30 +453,24 @@ async function auditarYResolverImagen({
   fotoCandidataUrl,
   esFotoManualDelEditor,
   titulo,
-  bajada,
-  categoria,
   busquedaWebSugerida,
-  promptIaSugerido
+  promptIaSugerido,
+  forzarBusquedaNueva = false
 }) {
-  if (fotoCandidataUrl && esFotoManualDelEditor) {
+  if (fotoCandidataUrl && esFotoManualDelEditor && !forzarBusquedaNueva) {
     return { urlFinal: fotoCandidataUrl, fuenteAuto: 'GENTILEZA / ARCHIVO' };
   }
 
-  if (fotoCandidataUrl) {
+  if (fotoCandidataUrl && !forzarBusquedaNueva) {
     const validada = await descargarYValidarImagen(fotoCandidataUrl);
     if (validada) {
-      const veredicto = await auditarCoherenciaConVision(validada, titulo, bajada, categoria);
-      if (veredicto.aprobada) {
-        return { urlFinal: fotoCandidataUrl, fuenteAuto: '' };
-      }
-      busquedaWebSugerida = veredicto.busqueda_web || busquedaWebSugerida;
-      promptIaSugerido = veredicto.prompt_ia_corregido || promptIaSugerido;
+      return { urlFinal: fotoCandidataUrl, fuenteAuto: '' };
     }
   }
 
   const queryWeb = busquedaWebSugerida || titulo;
   const fotoWebEncontrada = await buscarFotoRealEnWeb(queryWeb);
-  if (fotoWebEncontrada) {
+  if (fotoWebEncontrada && fotoWebEncontrada !== fotoCandidataUrl) {
     return { urlFinal: fotoWebEncontrada, fuenteAuto: 'ARCHIVO / PRENSA' };
   }
 
@@ -626,7 +479,7 @@ async function auditarYResolverImagen({
 }
 
 // ============================================================================
-// CEREBRO EDITORIAL EN CASTELLANO PURO (CON CARÁCTER, ENRIQUECIMIENTO Y VALIDACIÓN)
+// CEREBRO EDITORIAL EN CASTELLANO PURO (1 SOLA LLAMADA A GROQ POR NOTICIA)
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
@@ -663,7 +516,7 @@ Devolvé ÚNICAMENTE un JSON válido:
   "dato_clave": "Cifra o porcentaje central si existe, o vacío",
   "autor_cita": "Nombre y cargo si hay declaración textual, o vacío",
   "fuente_credito": "Crédito breve en MAYÚSCULAS (ej. PRENSA PROVINCIAL, VIALIDAD, ARCHIVO)",
-  "copy": "Texto 100% plano en castellano (SIN viñetas, SIN guiones de lista, SIN asteriscos, SIN números como 1) ni etiquetas como Línea 1:), separando cada bloque con doble salto de línea (\\n\\n): primero el TITULAR EN MAYÚSCULAS acompañado por 2 emojis seguros de la lista; luego 2 a 3 párrafos periodísticos con datos verificados, antecedentes y consecuencia real; luego el cierre dinámico invitando a seguir @elregistrosur con pregunta de debate o llamado a compartir terminado en 👇; luego una línea con ---; y finalmente 6 a 8 hashtags en minúsculas incluyendo #noticias #elregistrosur #caletaolivia #santacruz.",
+  "copy": "Texto 100% plano en castellano (SIN viñetas, SIN guiones de lista, SIN asteriscos, SIN números como 1) ni etiquetas), separando cada bloque con doble salto de línea (\\n\\n): primero el TITULAR EN MAYÚSCULAS acompañado por 2 emojis seguros de la lista; luego 2 a 3 párrafos periodísticos con datos verificados, antecedentes y consecuencia real; luego el cierre dinámico invitando a seguir @elregistrosur con pregunta de debate o llamado a compartir terminado en 👇; luego una línea con ---; y finalmente 6 a 8 hashtags en minúsculas incluyendo #noticias #elregistrosur #caletaolivia #santacruz.",
   "slides_carrusel": [
     { "titulo": "TITULAR PORTADA SIN EMOJIS", "destacar": "PALABRA CLAVE", "bajada": "Síntesis gancho para deslizar" },
     { "titulo": "EL ANTECEDENTE Y LOS DATOS", "destacar": "LOS DATOS", "bajada": "Contexto concreto y cifras en 14 palabras máximo" },
@@ -767,7 +620,7 @@ async function estamparMarcaDeAguaFoto(fotoUrl, textoCredito = 'EXCLUSIVO') {
   return buf;
 }
 
-async function capturarPlacaPuppeteer({
+async function renderizarFlyer({
   categoria,
   titulo,
   destacar,
@@ -780,8 +633,7 @@ async function capturarPlacaPuppeteer({
   esUrgente,
   esHistoria = false,
   modoVisual = 'estandar',
-  numeroSlide = '',
-  ajusteAnchoExtra = 0
+  numeroSlide = ''
 }) {
   const alto = esHistoria ? 1920 : 1080;
   const browser = await puppeteer.launch({
@@ -822,8 +674,7 @@ async function capturarPlacaPuppeteer({
     datoClave,
     autorCita,
     fuenteCredito,
-    numeroSlide,
-    ajusteAnchoExtra
+    numeroSlide
   }) => {
     document.body.style.webkitFontSmoothing = 'antialiased';
     document.body.style.textRendering = 'optimizeLegibility';
@@ -839,6 +690,7 @@ async function capturarPlacaPuppeteer({
 
     const accentColor = modoUrgente ? '#ef4444' : '#38bdf8';
 
+    // Control matemático en el DOM contra forma de pistolita y palabras/números colgados
     function blindarTipografiaProlija(el) {
       if (!el) return;
       el.style.textWrap = 'balance';
@@ -855,14 +707,7 @@ async function capturarPlacaPuppeteer({
         ultimoNodo.nodeValue = ultimoNodo.nodeValue.replace(/\s+(\S+)\s*$/, '\u00A0$1');
       }
 
-      if (ajusteAnchoExtra > 0) {
-        const anchoActual = el.getBoundingClientRect().width;
-        if (anchoActual > 420) {
-          el.style.maxWidth = `${Math.max(420, anchoActual - ajusteAnchoExtra)}px`;
-        }
-      }
-
-      for (let intento = 0; intento < 6; intento++) {
+      for (let intento = 0; intento < 7; intento++) {
         const range = document.createRange();
         range.selectNodeContents(el);
         const rects = Array.from(range.getClientRects()).filter(r => r.width > 4 && r.height > 4);
@@ -883,7 +728,7 @@ async function capturarPlacaPuppeteer({
         const anchoPrimera = lineas[0].right - lineas[0].left;
         const anchoUltima = lineas[lineas.length - 1].right - lineas[lineas.length - 1].left;
 
-        if (anchoUltima >= anchoPrimera * 0.38) break;
+        if (anchoUltima >= anchoPrimera * 0.42) break;
 
         const wActual = el.getBoundingClientRect().width;
         el.style.maxWidth = `${Math.max(380, wActual - 45)}px`;
@@ -1032,25 +877,15 @@ async function capturarPlacaPuppeteer({
     datoClave,
     autorCita,
     fuenteCredito,
-    numeroSlide,
-    ajusteAnchoExtra
+    numeroSlide
   });
 
   await page.evaluate(() => document.fonts.ready);
-  await new Promise(r => setTimeout(r, 900));
+  await new Promise(r => setTimeout(r, 850));
 
   const canvasElement = await page.$('#canvas');
   const imageBuffer = await canvasElement.screenshot({ type: 'png' });
   await browser.close();
-  return imageBuffer;
-}
-
-async function renderizarFlyer(opciones) {
-  let imageBuffer = await capturarPlacaPuppeteer({ ...opciones, ajusteAnchoExtra: 0 });
-  const revision = await auditarDisenoPlacaConVision(imageBuffer);
-  if (revision && revision.prolija === false) {
-    imageBuffer = await capturarPlacaPuppeteer({ ...opciones, ajusteAnchoExtra: 95 });
-  }
   return imageBuffer;
 }
 
@@ -1081,7 +916,7 @@ async function generarDatosRadar(forzar = false) {
   const candidatas = [...regionales, ...nacionales, ...espectaculos].filter(item => !noticiasEnviadasRadar.has(item.titulo));
   if (candidatas.length === 0) return null;
 
-  const elegida = await seleccionarNoticiaRelevanteConIA(candidatas);
+  const elegida = seleccionarNoticiaRelevante(candidatas);
   if (!elegida) return null;
 
   noticiasEnviadasRadar.add(elegida.titulo);
@@ -1097,8 +932,6 @@ async function generarDatosRadar(forzar = false) {
     fotoCandidataUrl: extraido.fotoExtraida,
     esFotoManualDelEditor: false,
     titulo: noticiaIA.titulo,
-    bajada: noticiaIA.bajada,
-    categoria: noticiaIA.categoria,
     busquedaWebSugerida: noticiaIA.busqueda_foto_web,
     promptIaSugerido: noticiaIA.prompt_imagen_ia
   });
@@ -1171,8 +1004,6 @@ async function ejecutarAlertaRuta3YServicios() {
     fotoCandidataUrl: extraido.fotoExtraida,
     esFotoManualDelEditor: false,
     titulo: noticiaIA.titulo,
-    bajada: noticiaIA.bajada,
-    categoria: 'ZONA NORTE / RUTA 3 Y SERVICIOS',
     busquedaWebSugerida: 'Ruta Nacional 3 Caleta Olivia Santa Cruz',
     promptIaSugerido: 'Patagonia Argentina coastal highway Ruta 3 traffic alert news photography'
   });
@@ -1675,10 +1506,9 @@ app.post('/generar', async (req, res) => {
         fotoCandidataUrl: ultimoEstado.foto_original_url,
         esFotoManualDelEditor: false,
         titulo: ultimoEstado.titulo,
-        bajada: ultimoEstado.bajada,
-        categoria: ultimoEstado.categoria,
         busquedaWebSugerida: ultimoEstado.titulo,
-        promptIaSugerido: ultimoEstado.prompt_imagen_ia
+        promptIaSugerido: ultimoEstado.prompt_imagen_ia,
+        forzarBusquedaNueva: true
       });
 
       const fotoOptimizada = optimizarFotoConCloudinary(urlFinal, false, 1080);
@@ -1949,8 +1779,6 @@ app.post('/generar', async (req, res) => {
         fotoCandidataUrl: fotoBase,
         esFotoManualDelEditor: Boolean(nuevaFotoTelegram),
         titulo,
-        bajada,
-        categoria,
         busquedaWebSugerida: busquedaFotoWeb,
         promptIaSugerido: promptImagenIA
       });
