@@ -11,34 +11,22 @@ const templateHtml = fs.readFileSync(path.join(__dirname, 'template.html'), 'utf
 const TELEGRAM_TOKEN = '9253246227:AAFaJzhi3uxaoWLuxg9E0HZ4WfT0YdPts6w';
 const EDITOR_CHAT_ID = '6008268963';
 
-const MEDIOS_REGIONALES = [
-  'laopinionaustral.com.ar',
-  'tiemposur.com.ar',
-  'adnsur.com.ar',
-  'elpatagonico.com',
-  'lagacetadesantacruz.com.ar',
-  'ecosdelsur.com',
-  'noticias.santacruz.gob.ar',
-  'infocaleta.com'
-];
-
-const MEDIOS_NACIONALES = [
-  'infobae.com',
-  'lanacion.com.ar',
-  'clarin.com',
-  'tn.com.ar',
-  'pagina12.com.ar',
-  'iprofesional.com',
-  'eleconomista.com.ar',
-  'tycsports.com'
-];
-
-const MEDIOS_ESPECTACULOS = [
-  'primiciasya.com',
-  'ciudad.com.ar',
-  'pronto.com.ar',
-  'paparazzi.com.ar',
-  'exitoina.perfil.com'
+// Feeds RSS directos de los portales + radares compactos para que nunca devuelva vacío
+const FUENTES_RSS_RADAR = [
+  { url: 'https://laopinionaustral.com.ar/feed/', medio: 'LA OPINIÓN AUSTRAL', categoria: 'regional' },
+  { url: 'https://infocaleta.com/v2/feed/', medio: 'INFOCALETA', categoria: 'regional' },
+  { url: 'https://lagacetadesantacruz.com.ar/feed/', medio: 'LA GACETA SANTA CRUZ', categoria: 'regional' },
+  { url: 'https://ecosdelsur.com/feed/', medio: 'ECOS DEL SUR', categoria: 'regional' },
+  { url: 'https://news.google.com/rss/search?q=' + encodeURIComponent('("Caleta Olivia" OR "Santa Cruz" OR "Claudio Vidal" OR "Ruta 3" OR site:tiemposur.com.ar OR site:adnsur.com.ar OR site:elpatagonico.com) when:24h') + '&hl=es-419&gl=AR&ceid=AR:es-419', medio: 'PATAGONIA', categoria: 'regional' },
+  { url: 'https://www.infobae.com/arc/outboundfeeds/rss/', medio: 'INFOBAE', categoria: 'nacional' },
+  { url: 'https://www.lanacion.com.ar/arc/outboundfeeds/rss/', medio: 'LA NACIÓN', categoria: 'nacional' },
+  { url: 'https://www.clarin.com/rss/lo-ultimo/', medio: 'CLARÍN', categoria: 'nacional' },
+  { url: 'https://www.pagina12.com.ar/rss/portada', medio: 'PÁGINA 12', categoria: 'nacional' },
+  { url: 'https://eleconomista.com.ar/feed/', medio: 'EL ECONOMISTA', categoria: 'nacional' },
+  { url: 'https://news.google.com/rss/search?q=' + encodeURIComponent('(site:tn.com.ar OR site:tycsports.com OR site:iprofesional.com) when:12h') + '&hl=es-419&gl=AR&ceid=AR:es-419', medio: 'NACIONAL', categoria: 'nacional' },
+  { url: 'https://www.paparazzi.com.ar/feed/', medio: 'PAPARAZZI', categoria: 'espectaculos' },
+  { url: 'https://exitoina.perfil.com/feed', medio: 'EXITOÍNA', categoria: 'espectaculos' },
+  { url: 'https://news.google.com/rss/search?q=' + encodeURIComponent('(site:primiciasya.com OR site:ciudad.com.ar OR site:pronto.com.ar) when:24h') + '&hl=es-419&gl=AR&ceid=AR:es-419', medio: 'ESPECTÁCULOS', categoria: 'espectaculos' }
 ];
 
 let ultimoEstado = {
@@ -74,6 +62,8 @@ function guardarEnColaBorradores(nuevoEstado) {
 const noticiasEnviadasRadar = new Set();
 let ultimoClimaDiaEnviado = '';
 let ultimoResumenDiaEnviado = '';
+let ultimoComandoTexto = '';
+let ultimoComandoTimestamp = 0;
 
 app.get('/ping', (req, res) => res.status(200).send('OK - El Registro Sur 2K + Radar 21 Medios activo'));
 
@@ -116,44 +106,54 @@ function filtrarEmojisSegurosRedes(texto) {
     .trim();
 }
 
-// Llamada única a openai/gpt-oss-120b con espera inteligente ante límite 429
+// Llamada compacta con límite de tokens controlado y respaldo automático en llama-3.3-70b-versatile
 async function llamarGroqChat(messages) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('Falta configurar GROQ_API_KEY en Render.');
 
-  for (let intento = 1; intento <= 3; intento++) {
-    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      signal: AbortSignal.timeout(14000),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: 'openai/gpt-oss-120b',
-        temperature: 0.3,
-        response_format: { type: 'json_object' },
-        messages
-      })
-    });
+  const modelos = ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile'];
+  let ultimoError = '';
 
-    if (resp.status === 429 && intento < 3) {
-      const retryHeader = parseInt(resp.headers.get('retry-after') || '0', 10);
-      const esperaMs = retryHeader > 0 ? Math.min(retryHeader * 1000, 5000) : intento * 2500;
-      console.warn(`Cupo Groq 429 alcanzado. Esperando ${esperaMs}ms (intento ${intento}/3)...`);
-      await new Promise(r => setTimeout(r, esperaMs));
-      continue;
+  for (const modelo of modelos) {
+    for (let intento = 1; intento <= 2; intento++) {
+      try {
+        const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          signal: AbortSignal.timeout(14000),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: modelo,
+            temperature: 0.3,
+            max_tokens: 1100,
+            response_format: { type: 'json_object' },
+            messages
+          })
+        });
+
+        if ((resp.status === 429 || resp.status === 413) && intento === 1) {
+          ultimoError = `Groq (${modelo}) status ${resp.status}`;
+          await new Promise(r => setTimeout(r, 1500));
+          break; // Pasa al modelo de respaldo sin demorar
+        }
+
+        if (!resp.ok) {
+          ultimoError = `Error de Groq (${resp.status}): ${await resp.text()}`;
+          break;
+        }
+
+        const data = await resp.json();
+        const rawContent = data?.choices?.[0]?.message?.content || '{}';
+        const jsonLimpio = rawContent.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+        return JSON.parse(jsonLimpio);
+      } catch (e) {
+        ultimoError = e.message;
+      }
     }
-
-    if (!resp.ok) {
-      throw new Error(`Error de Groq (${resp.status}): ${await resp.text()}`);
-    }
-
-    const data = await resp.json();
-    const rawContent = data?.choices?.[0]?.message?.content || '{}';
-    const jsonLimpio = rawContent.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
-    return JSON.parse(jsonLimpio);
   }
+  throw new Error(ultimoError || 'No se pudo conectar con Groq');
 }
 
 function generarTecladoTactil() {
@@ -248,11 +248,15 @@ async function transcribirAudioConGroq(audioUrl) {
     throw new Error(`Error transcribiendo audio (${resp.status}): ${await resp.text()}`);
   }
   const data = await resp.json();
-  return data.text || '';
+  return (data.text || '').slice(0, 1800);
 }
 
+// Extractor limpio con tope estricto de caracteres para nunca exceder los 8000 TPM de Groq
 async function extraerNoticiaDeLink(url) {
   try {
+    if (!url || url.includes('news.google.com')) {
+      return { fotoExtraida: '', fuenteDominio: '', textoExtraido: '' };
+    }
     const resp = await fetch(url, {
       redirect: 'follow',
       signal: AbortSignal.timeout(6500),
@@ -264,13 +268,23 @@ async function extraerNoticiaDeLink(url) {
                          html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ||
                          html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i);
     const ogTitleMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
-                         html.match(/<title>([^<]+)<\/title>/i);
+                         html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const ogDescMatch = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i) ||
+                        html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
 
-    const parrafos = [...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)]
-      .map(m => m[1].replace(/<[^>]+>/g, '').trim())
-      .filter(t => t.length > 60)
-      .slice(0, 8)
-      .join('\n');
+    // Elimina scripts, estilos y SVGs antes de buscar párrafos <p> reales
+    const htmlSinBasura = html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ');
+
+    const parrafos = [...htmlSinBasura.matchAll(/<p(?:\s[^>]*)?>([\s\S]*?)<\/p>/gi)]
+      .map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s{2,}/g, ' ').trim())
+      .filter(t => t.length > 55 && !t.includes('{') && !t.includes('function('))
+      .slice(0, 6)
+      .join('\n')
+      .slice(0, 1500);
 
     let fotoUrl = ogImageMatch ? ogImageMatch[1] : '';
     if (fotoUrl && fotoUrl.startsWith('/')) {
@@ -279,11 +293,13 @@ async function extraerNoticiaDeLink(url) {
     }
 
     const dominio = new URL(url).hostname.replace('www.', '').split('.')[0].toUpperCase();
+    const tituloLimpio = (ogTitleMatch ? ogTitleMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 220);
+    const bajadaMeta = (ogDescMatch ? ogDescMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 350);
 
     return {
       fotoExtraida: fotoUrl,
       fuenteDominio: dominio,
-      textoExtraido: `TÍTULO ORIGINAL: ${ogTitleMatch ? ogTitleMatch[1] : ''}\nCUERPO: ${parrafos}`
+      textoExtraido: `TÍTULO ORIGINAL: ${tituloLimpio}\nBAJADA: ${bajadaMeta}\nCUERPO: ${parrafos}`.slice(0, 1900)
     };
   } catch (e) {
     return { fotoExtraida: '', fuenteDominio: '', textoExtraido: '' };
@@ -292,72 +308,130 @@ async function extraerNoticiaDeLink(url) {
 
 async function buscarContextoEnGoogleNews(consulta) {
   try {
-    const queryLimpia = consulta.replace(/https?:\/\/\S+/g, '').replace(/^\.[a-zA-Z]+\s*/i, '').trim().split(/\s+/).slice(0, 8).join(' ');
+    const queryLimpia = consulta
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/\[DATOS EXTRAÍDOS[\s\S]*/i, '')
+      .replace(/^\.[a-zA-Z0-9]+\s*/i, '')
+      .trim()
+      .split(/\s+/)
+      .slice(0, 8)
+      .join(' ');
     if (queryLimpia.length < 5) return '';
 
     const url = `https://news.google.com/rss/search?q=${encodeURIComponent(queryLimpia)}&hl=es-419&gl=AR&ceid=AR:es-419`;
     const resp = await fetch(url, { signal: AbortSignal.timeout(4500) });
     const xml = await resp.text();
 
-    const items = [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<pubDate>([\s\S]*?)<\/pubDate>[\s\S]*?<\/item>/gi)]
-      .slice(0, 5)
-      .map(m => `- ${m[1].replace(/<!\[CDATA\[|\]\]>/g, '')} (${m[2]})`)
-      .join('\n');
+    const bloques = [...xml.matchAll(/<item[\s>]([\s\S]*?)<\/item>/gi)].map(m => m[1]);
+    const items = bloques.slice(0, 4).map(b => {
+      const tit = b.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/<!\[CDATA\[|\]\]>/g, '').trim() || '';
+      return tit ? `- ${tit}` : '';
+    }).filter(Boolean).join('\n').slice(0, 600);
 
-    return items ? `\nFUENTES Y ANTECEDENTES EN MEDIOS DE ARGENTINA:\n${items}` : '';
+    return items ? `\nANTECEDENTES EN MEDIOS:\n${items}` : '';
   } catch (e) {
     return '';
   }
 }
 
 // ============================================================================
-// MONITOR DE LOS 21 PORTALES + CURADOR RÁPIDO SIN GASTAR CUPO DE GROQ
+// MONITOR DE PORTALES (LECTURA DE RSS DIRECTOS + GOOGLE NEWS EN PARALELO)
 // ============================================================================
 
-async function consultarRssGooglePorSitios(dominios, ventanaTiempo = '4h', categoriaOrigen = 'general') {
+async function leerUnFeedRss(fuente) {
   try {
-    const filtroSitios = dominios.map(d => `site:${d}`).join(' OR ');
-    const query = `(${filtroSitios}) when:${ventanaTiempo}`;
-    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=es-419&gl=AR&ceid=AR:es-419`;
-    const resp = await fetch(url, { signal: AbortSignal.timeout(6500) });
+    const resp = await fetch(fuente.url, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(5500),
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    if (!resp.ok) return [];
     const xml = await resp.text();
 
-    return [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<link>([\s\S]*?)<\/link>[\s\S]*?<source[^>]*>([\s\S]*?)<\/source>[\s\S]*?<\/item>/gi)]
-      .map(m => ({
-        titulo: m[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim(),
-        link: m[2].trim(),
-        medio: m[3].replace(/<!\[CDATA\[|\]\]>/g, '').trim(),
-        categoriaOrigen
-      }));
+    const bloquesItem = [...xml.matchAll(/<item[\s>]([\s\S]*?)<\/item>/gi)].map(m => m[1]);
+
+    return bloquesItem.slice(0, 8).map(itemXml => {
+      const tituloMatch = itemXml.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      const linkMatch = itemXml.match(/<link[^>]*>([\s\S]*?)<\/link>/i);
+      const sourceMatch = itemXml.match(/<source[^>]*>([\s\S]*?)<\/source>/i);
+      const descMatch = itemXml.match(/<description[^>]*>([\s\S]*?)<\/description>/i);
+      const imgMatch = itemXml.match(/<enclosure[^>]+url=["']([^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i) ||
+                       itemXml.match(/<media:content[^>]+url=["']([^"']+)["']/i) ||
+                       itemXml.match(/<img[^>]+src=["']([^"']+)["']/i);
+
+      const titulo = (tituloMatch ? tituloMatch[1] : '')
+        .replace(/<!\[CDATA\[|\]\]>/g, '')
+        .replace(/&quot;/g, '"')
+        .replace(/&#039;|&apos;/g, "'")
+        .replace(/&amp;/g, '&')
+        .replace(/<[^>]+>/g, '')
+        .trim();
+
+      const link = (linkMatch ? linkMatch[1] : '')
+        .replace(/<!\[CDATA\[|\]\]>/g, '')
+        .trim();
+
+      const bajadaRss = (descMatch ? descMatch[1] : '')
+        .replace(/<!\[CDATA\[|\]\]>/g, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim()
+        .slice(0, 320);
+
+      const medio = sourceMatch
+        ? sourceMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim()
+        : fuente.medio;
+
+      return {
+        titulo,
+        link,
+        medio,
+        categoriaOrigen: fuente.categoria,
+        fotoRss: imgMatch ? imgMatch[1] : '',
+        bajadaRss
+      };
+    }).filter(i => i.titulo.length > 18 && i.link.startsWith('http'));
   } catch (e) {
     return [];
   }
 }
 
-function seleccionarNoticiaRelevante(candidatas) {
+async function obtenerTodasLasCandidatasRadar() {
+  const listas = await Promise.all(FUENTES_RSS_RADAR.map(f => leerUnFeedRss(f)));
+  return listas.flat();
+}
+
+function seleccionarNoticiaRelevante(candidatas, ignorarHistorial = false) {
   if (!candidatas || candidatas.length === 0) return null;
 
   const regexDescartar = /hor[óo]scopo|quiniela|loter[íi]a|crucigrama|efem[ée]rides|receta|tarot|predicciones/i;
   const regexPrioridadMaxima = /caleta olivia|santa cruz|claudio vidal|ruta 3|ruta nacional 3|ram[óo]n santos|zona norte|pico truncado|las heras|r[íi]o gallegos|ypf|petr[óo]leo|servicios p[úu]blicos|distrigas|acueducto/i;
-  const regexImpactoNacional = /milei|d[óo]lar|inflaci[óo]n|anses|jubilados|combustible|nafta|sueldo|paro|corte|tarifa|impuesto|banco central|selecci[óo]n argentina|boca|river|messi|colapinto/i;
+  const regexImpactoNacional = /milei|d[óo]lar|inflaci[óo]n|anses|jubilados|combustible|nafta|sueldo|paro|corte|tarifa|impuesto|banco central|selecci[óo]n argentina|boca|river|messi|colapinto|gobierno|empresarios|salarios/i;
   const regexBombasEspectaculos = /wanda|icardi|china su[áa]rez|tinelli|susana|mirtha|gran hermano|lam|esc[áa]ndalo|separaci[óo]n|denuncia|luck ra|tiago pzk|la joaqui|duki|mar[íi]a becerra|l-gante|occhiato|granados/i;
 
-  const puntuadas = candidatas
-    .filter(c => !regexDescartar.test(c.titulo))
+  const disponibles = candidatas.filter(c => {
+    if (regexDescartar.test(c.titulo)) return false;
+    if (!ignorarHistorial && noticiasEnviadasRadar.has(c.titulo)) return false;
+    return true;
+  });
+
+  if (disponibles.length === 0) return null;
+
+  const puntuadas = disponibles
     .map(c => {
-      let puntos = 0;
-      if (regexPrioridadMaxima.test(c.titulo)) puntos += 50;
-      if (c.categoriaOrigen === 'regional') puntos += 25;
-      if (regexImpactoNacional.test(c.titulo)) puntos += 30;
+      let puntos = 10;
+      if (regexPrioridadMaxima.test(c.titulo)) puntos += 55;
+      if (c.categoriaOrigen === 'regional') puntos += 30;
+      if (regexImpactoNacional.test(c.titulo)) puntos += 35;
       if (c.categoriaOrigen === 'espectaculos') {
-        puntos += regexBombasEspectaculos.test(c.titulo) ? 28 : -20;
+        puntos += regexBombasEspectaculos.test(c.titulo) ? 32 : -5;
       }
+      if (c.fotoRss) puntos += 8;
       return { ...c, puntos };
     })
-    .filter(c => c.puntos > 0)
     .sort((a, b) => b.puntos - a.puntos);
 
-  return puntuadas[0] || candidatas[0];
+  return puntuadas[0];
 }
 
 async function obtenerDatosClimaCaleta() {
@@ -410,7 +484,7 @@ async function descargarYValidarImagen(url) {
     if (!contentType.startsWith('image/') || contentType.includes('svg')) return null;
 
     const buffer = Buffer.from(await resp.arrayBuffer());
-    if (buffer.length < 18000 || buffer.length > 8 * 1024 * 1024) return null;
+    if (buffer.length < 15000 || buffer.length > 8 * 1024 * 1024) return null;
 
     return { url, bytes: buffer.length };
   } catch (e) {
@@ -439,7 +513,7 @@ async function buscarFotoRealEnWeb(consulta) {
       });
       const imgData = await imgResp.json();
       const candidatas = (imgData.results || [])
-        .filter(r => (r.width || 0) >= 750 && (r.height || 0) >= 500)
+        .filter(r => (r.width || 0) >= 700 && (r.height || 0) >= 450)
         .slice(0, 3);
 
       const resultados = await Promise.all(candidatas.map(c => descargarYValidarImagen(c.image)));
@@ -480,53 +554,45 @@ async function auditarYResolverImagen({
 }
 
 // ============================================================================
-// CEREBRO EDITORIAL EN CASTELLANO PURO (1 SOLA LLAMADA A GROQ POR NOTICIA)
+// CEREBRO EDITORIAL EN CASTELLANO PURO (OPTIMIZADO BAJO CONSUMO DE TOKENS)
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
-  const antecedentesExtra = contextoWeb
-    ? ''
-    : await buscarContextoEnGoogleNews(`${textoCrudo} antecedentes obras montos`);
+  const textoRecortado = String(textoCrudo || '').slice(0, 2200);
+  const contextoRecortado = String(contextoWeb || '').slice(0, 600);
 
-  const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), medio periodístico digital de Caleta Olivia, Santa Cruz ("El sur tiene registro").
-IDIOMA OBLIGATORIO: Redactá ABSOLUTAMENTE TODO EN CASTELLANO DE ARGENTINA PERFECTO Y NATURAL. Prohibido usar palabras en portugués, gallego o inglés (jamás escribas "fortes", escribí "fuertes").
+  const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), diario digital de Caleta Olivia, Santa Cruz.
+IDIOMA: Estrictamente CASTELLANO DE ARGENTINA (jamás escribas "fortes", usá "fuertes").
 
-PERSONALIDAD Y VOZ DE REDACCIÓN ("CON CARÁCTER Y CALLE, CERO HUMO"):
-1. NUNCA SUENES VACÍO NI BUROCRÁTICO: Prohibido escribir como un parte policial muerto o una gacetilla oficial. Nunca arranques con "En el día de la fecha...", "Se llevó a cabo..." o "Cabe destacar...". Arrancá directo con el hecho que impacta en la calle, el bolsillo, la producción o el debate público, usando verbos de acción, ritmo ágil y autoridad periodística.
-2. VECINO Y PRODUCCIÓN — CERO CHUPAMEDIAS (1B): Mostrá con cifras, presupuestos y hechos concretos lo que impulsa el empleo, la energía, la obra pública y el orden fiscal en Santa Cruz (Claudio Vidal) y Nación (Javier Milei). Señalá con la misma firmeza y datos duros cuando falla un servicio o un aumento golpea al vecino de Caleta Olivia. Prohibido usar adjetivos elogiosos hacia políticos o gestiones ("histórica gestión", "brillante decisión", "gran logro", "enorme esfuerzo").
-3. CERO CUENTA CUENTOS EN CONFLICTOS (3): En cortes de Ruta Nacional N° 3, paros, falta de agua o reclamos locales, nada de épica ni dramatización literaria. Conectá causa y efecto con datos precisos: qué pasa, dónde exactamente, horarios, responsables, antecedentes previos y qué consecuencia real tiene para el vecino o la actividad.
-4. ENRIQUECIMIENTO CON ANTECEDENTES (4A): Cruzá el dato nuevo con el contexto previo confirmado (demoras anteriores, licitaciones previas, cifras comparativas de Zona Norte) para que cada párrafo aporte valor real y no relleno.
-5. ESPECTÁCULOS / CHISMES VIRALES: Si la noticia es de farándula o espectáculos de alto impacto, redactala directa al hueso con los protagonistas, el cruce o primicia confirmada, sin insultos ni difamaciones (100% apto para Meta) y cerrá con pregunta de debate (¿Vos qué opinás? 👇).
-6. VALIDACIÓN Y DESCARTE SILENCIOSO (2B): Contrastá los datos redactados contra las fuentes web recibidas. Si la noticia central no tiene sustento verificable o contradice los hechos (y no es una edición manual del director), devolvé "descartar": true. Eliminá cualquier dato secundario no confirmado.
+VOZ PERIODÍSTICA ("CON CARÁCTER, CERO HUMO"):
+- Arrancá directo con el hecho que impacta en la calle, el bolsillo, la producción o el debate público. Prohibido "En el día de la fecha..." o "Cabe destacar...".
+- Mostrá con datos concretos lo que impulsa empleo, energía, obra pública y orden fiscal en Santa Cruz (Claudio Vidal) y Nación (Javier Milei), y señalá con la misma firmeza cuando falla un servicio. Prohibido adjetivos chupamedias ("histórica gestión", "gran logro").
+- En conflictos o cortes de Ruta 3, conectá causa, lugar, horarios y consecuencia real sin dramatizar.
+- En espectáculos, andá directo al cruce o primicia confirmada sin insultos y cerrá con pregunta de debate.
 
-REGLAS ESTRICTAS DE DISEÑO Y EMOJIS COMPATIBLES CON FACEBOOK:
-- PROHIBIDO poner emojis o banderas en "categoria", "titulo", "destacar" o "bajada".
-- PROHIBIDO usar banderas (🇦🇷, 🇺🇸, etc.) en cualquier parte.
-- PROHIBIDO poner números de lista o etiquetas ("1)", "2)", "Línea 1:", "Titular:") dentro de "copy".
-- EN "copy" (DESCRIPCIÓN PARA REDES): Usá 2 emojis en el encabezado en mayúsculas y 👇 en el cierre, eligiendo ÚNICAMENTE de esta lista compatible con Facebook Web y Windows (PROHIBIDO usar símbolos como ❄️, ⚠️, 🌡️, ☀️ que salen como cuadraditos):
-  🚨 🔴 🟠 🟡 🚧 🚔 🚒 🚑 🛑 💨 🌀 🌊 💧 ☔ ⛄ ⛅ ⚡ 🔥 💰 💵 📈 📉 📊 ⛽ 🏭 🚜 🚛 🚢 🐟 📢 📣 📰 📋 📄 📜 🏥 🏫 🎓 👷 🤝 📍 📅 🕒 ⚽ 🏆 🏅 🎭 🎶 👇 👉 📲 💬 ✅ ❌
-- EVITAR "FORMA DE PISTOLITA" Y PALABRAS SUELTAS: Redactá "titulo" (4 a 7 palabras) y "bajada" (10 a 13 palabras) con longitud equilibrada para que formen bloques parejos en 2 líneas y jamás quede una sola palabra, número o letra colgada abajo.
+REGLAS DE DISEÑO Y EMOJIS:
+- CERO emojis y CERO banderas en "categoria", "titulo", "destacar" y "bajada".
+- En "copy" prohibido usar números como "1)" o etiquetas como "Línea 1:". Usá 2 emojis en el encabezado y 👇 al final, SOLO de esta lista segura para Facebook: 🚨 🔴 🟠 🟡 🚧 🚔 🚒 🚑 🛑 💨 🌀 🌊 💧 ☔ ⛄ ⛅ ⚡ 🔥 💰 💵 📈 📉 📊 ⛽ 🏭 🚜 🚛 🚢 🐟 📢 📣 📰 📋 📄 📜 🏥 🏫 🎓 👷 🤝 📍 📅 🕒 ⚽ 🏆 🏅 🎭 🎶 👇 👉 📲 💬 ✅ ❌
+- "titulo" de 4 a 7 palabras y "bajada" de 10 a 13 palabras equilibradas (sin palabra o número colgado al final).
 
-REGLAS DE FORMATO (TEXTO 100% PLANO PARA META, EN CASTELLANO):
-Devolvé ÚNICAMENTE un JSON válido:
+Devolvé ÚNICAMENTE este JSON:
 {
   "descartar": false,
-  "motivo_descarte": "",
-  "categoria": "SECCIÓN / SUBTEMA en MAYÚSCULAS SIN EMOJIS (ej. SANTA CRUZ / ENERGÍA, CALETA OLIVIA / SERVICIOS, ESPECTÁCULOS / VIRAL)",
-  "titulo": "Titular en MAYÚSCULAS en castellano, seco y con gancho, SIN EMOJIS (4 a 7 palabras máximo)",
-  "destacar": "Subcadena EXACTA dentro de 'titulo' SIN EMOJIS (2 a 4 palabras clave)",
-  "bajada": "1 sola oración contundente en castellano SIN EMOJIS con el dato clave (10 a 13 palabras, sin palabra suelta final)",
-  "dato_clave": "Cifra o porcentaje central si existe, o vacío",
-  "autor_cita": "Nombre y cargo si hay declaración textual, o vacío",
-  "fuente_credito": "Crédito breve en MAYÚSCULAS (ej. PRENSA PROVINCIAL, VIALIDAD, ARCHIVO)",
-  "copy": "Texto 100% plano en castellano (SIN viñetas, SIN guiones de lista, SIN asteriscos, SIN números como 1) ni etiquetas), separando cada bloque con doble salto de línea (\\n\\n): primero el TITULAR EN MAYÚSCULAS acompañado por 2 emojis seguros de la lista; luego 2 a 3 párrafos periodísticos con datos verificados, antecedentes y consecuencia real; luego el cierre dinámico invitando a seguir @elregistrosur con pregunta de debate o llamado a compartir terminado en 👇; luego una línea con ---; y finalmente 6 a 8 hashtags en minúsculas incluyendo #noticias #elregistrosur #caletaolivia #santacruz.",
+  "categoria": "SECCIÓN / SUBTEMA EN MAYÚSCULAS SIN EMOJIS",
+  "titulo": "TITULAR EN MAYÚSCULAS SIN EMOJIS (4 a 7 palabras)",
+  "destacar": "2 a 4 palabras exactas del titulo",
+  "bajada": "Oración informativa en castellano SIN EMOJIS (10 a 13 palabras)",
+  "dato_clave": "Cifra central si existe, o vacío",
+  "autor_cita": "Nombre y cargo si hay cita, o vacío",
+  "fuente_credito": "Crédito corto en MAYÚSCULAS",
+  "copy": "Texto plano en castellano separado por \\n\\n: encabezado en MAYÚSCULAS con 2 emojis seguros; luego 2 a 3 párrafos con datos verificados, contexto y consecuencia real; luego cierre invitando a seguir @elregistrosur con pregunta o llamado a compartir terminado en 👇; luego ---; luego 6 a 8 hashtags en minúsculas (#noticias #elregistrosur #caletaolivia #santacruz).",
   "slides_carrusel": [
-    { "titulo": "TITULAR PORTADA SIN EMOJIS", "destacar": "PALABRA CLAVE", "bajada": "Síntesis gancho para deslizar" },
-    { "titulo": "EL ANTECEDENTE Y LOS DATOS", "destacar": "LOS DATOS", "bajada": "Contexto concreto y cifras en 14 palabras máximo" },
-    { "titulo": "QUÉ CAMBIA EN LA REGIÓN", "destacar": "LA REGIÓN", "bajada": "Consecuencia directa en Caleta Olivia o Santa Cruz" }
+    { "titulo": "TITULAR PORTADA", "destacar": "PALABRA", "bajada": "Síntesis gancho" },
+    { "titulo": "ANTECEDENTES Y DATOS", "destacar": "DATOS", "bajada": "Contexto y cifras" },
+    { "titulo": "QUÉ CAMBIA AHORA", "destacar": "AHORA", "bajada": "Consecuencia directa" }
   ],
-  "busqueda_foto_web": "3 a 5 palabras clave en castellano para foto real de prensa",
-  "prompt_imagen_ia": "Photorealistic editorial news photography prompt in English (18 words, no text)"
+  "busqueda_foto_web": "3 a 5 palabras clave para buscar foto real",
+  "prompt_imagen_ia": "Photorealistic editorial news photography prompt in English (16 words, no text)"
 }`;
 
   const userMessage = esEdicion
@@ -535,9 +601,9 @@ Devolvé ÚNICAMENTE un JSON válido:
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: ultimoEstado.copy
-      }, null, 2)}\n\nCambio pedido por el director: "${textoCrudo}".\n${contextoWeb}\nDevolvé el JSON actualizado en castellano con "descartar": false, sin emojis ni banderas en titulo ni bajada y sin números como 1) en copy.`
-    : `Noticia recibida:\n"${textoCrudo}"\n${contextoWeb}\n${antecedentesExtra}\nRedactá estrictamente en castellano de Argentina con carácter periodístico, enriquecé con antecedentes y validá los datos en JSON.`;
+        copy: String(ultimoEstado.copy || '').slice(0, 900)
+      })}\n\nCambio pedido: "${textoRecortado}". Devolvé JSON en castellano.`
+    : `Noticia:\n"${textoRecortado}"\n${contextoRecortado}\nRedactá en castellano de Argentina en JSON.`;
 
   const parsed = await llamarGroqChat([
     { role: 'system', content: systemPrompt },
@@ -673,7 +739,6 @@ async function renderizarFlyer({
 
     await page.setContent(htmlModificado, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-    // Espera inteligente de imágenes y fuentes con tope de 8s para no exceder nunca el timeout de Make
     await page.evaluate(async () => {
       if (document.fonts && document.fonts.ready) {
         await Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 2500))]);
@@ -929,16 +994,13 @@ async function enviarFotoConBotonesTelegram(imageBuffer, captionTexto) {
 // ============================================================================
 
 async function generarDatosRadar(forzar = false) {
-  const [regionales, nacionales, espectaculos] = await Promise.all([
-    consultarRssGooglePorSitios(MEDIOS_REGIONALES, '4h', 'regional'),
-    consultarRssGooglePorSitios(MEDIOS_NACIONALES, '3h', 'nacional'),
-    consultarRssGooglePorSitios(MEDIOS_ESPECTACULOS, '3h', 'espectaculos')
-  ]);
-
-  const candidatas = [...regionales, ...nacionales, ...espectaculos].filter(item => !noticiasEnviadasRadar.has(item.titulo));
+  const candidatas = await obtenerTodasLasCandidatasRadar();
   if (candidatas.length === 0) return null;
 
-  const elegida = seleccionarNoticiaRelevante(candidatas);
+  let elegida = seleccionarNoticiaRelevante(candidatas, false);
+  if (!elegida && forzar) {
+    elegida = seleccionarNoticiaRelevante(candidatas, true);
+  }
   if (!elegida) return null;
 
   noticiasEnviadasRadar.add(elegida.titulo);
@@ -948,13 +1010,13 @@ async function generarDatosRadar(forzar = false) {
     buscarContextoEnGoogleNews(elegida.titulo)
   ]);
 
-  const textoCompleto = `CATEGORÍA: ${elegida.categoriaOrigen.toUpperCase()}\nMEDIO DE ORIGEN: ${elegida.medio}\nTITULAR: ${elegida.titulo}\n${extraido.textoExtraido}`;
+  const textoCompleto = `CATEGORÍA: ${elegida.categoriaOrigen.toUpperCase()}\nMEDIO DE ORIGEN: ${elegida.medio}\nTITULAR: ${elegida.titulo}\nRESUMEN RSS: ${elegida.bajadaRss || ''}\n${extraido.textoExtraido}`;
 
-  const noticiaIA = await procesarNoticiaConIA(textoCompleto, contexto, false);
-  if (noticiaIA.descartar) return null;
+  const noticiaIA = await procesarNoticiaConIA(textoCompleto, contexto || 'Noticia verificada en portal oficial.', false);
 
+  const fotoInicial = extraido.fotoExtraida || elegida.fotoRss || '';
   const { urlFinal, fuenteAuto } = await auditarYResolverImagen({
-    fotoCandidataUrl: extraido.fotoExtraida,
+    fotoCandidataUrl: fotoInicial,
     esFotoManualDelEditor: false,
     titulo: noticiaIA.titulo,
     busquedaWebSugerida: noticiaIA.busqueda_foto_web,
@@ -1004,20 +1066,14 @@ async function generarDatosRadar(forzar = false) {
 }
 
 async function ejecutarAlertaRuta3YServicios() {
-  const queryRuta = '("Ruta 3" OR "Ruta Nacional 3" OR "Ramón Santos" OR "Caleta Olivia") (corte OR tránsito OR agua OR luz OR acueducto OR viento OR alerta) when:6h';
+  const queryRuta = '("Ruta 3" OR "Ruta Nacional 3" OR "Ramón Santos" OR "Caleta Olivia") (corte OR tránsito OR agua OR luz OR acueducto OR viento OR alerta) when:24h';
   const url = `https://news.google.com/rss/search?q=${encodeURIComponent(queryRuta)}&hl=es-419&gl=AR&ceid=AR:es-419`;
-  const resp = await fetch(url, { signal: AbortSignal.timeout(6500) });
-  const xml = await resp.text();
+  const items = await leerUnFeedRss({ url, medio: 'VIALIDAD / SERVICIOS', categoria: 'regional' });
 
-  const items = [...xml.matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<link>([\s\S]*?)<\/link>[\s\S]*?<\/item>/gi)]
-    .map(m => ({
-      titulo: m[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim(),
-      link: m[2].trim()
-    }))
-    .filter(i => !noticiasEnviadasRadar.has(i.titulo));
+  const nuevos = items.filter(i => !noticiasEnviadasRadar.has(i.titulo));
+  const elegida = nuevos[0] || items[0];
+  if (!elegida) return null;
 
-  if (items.length === 0) return null;
-  const elegida = items[0];
   noticiasEnviadasRadar.add(elegida.titulo);
 
   const [extraido, contexto] = await Promise.all([
@@ -1025,11 +1081,10 @@ async function ejecutarAlertaRuta3YServicios() {
     buscarContextoEnGoogleNews(elegida.titulo)
   ]);
 
-  const noticiaIA = await procesarNoticiaConIA(`ALERTA VIAL / SERVICIOS ZONA NORTE: ${elegida.titulo}\n${extraido.textoExtraido}`, contexto, false);
-  if (noticiaIA.descartar) return null;
+  const noticiaIA = await procesarNoticiaConIA(`ALERTA VIAL / SERVICIOS ZONA NORTE: ${elegida.titulo}\n${extraido.textoExtraido}`, contexto || 'Reporte vial y de servicios.', false);
 
   const { urlFinal, fuenteAuto } = await auditarYResolverImagen({
-    fotoCandidataUrl: extraido.fotoExtraida,
+    fotoCandidataUrl: extraido.fotoExtraida || elegida.fotoRss,
     esFotoManualDelEditor: false,
     titulo: noticiaIA.titulo,
     busquedaWebSugerida: 'Ruta Nacional 3 Caleta Olivia Santa Cruz',
@@ -1074,15 +1129,11 @@ async function ejecutarAlertaRuta3YServicios() {
 }
 
 async function ejecutarResumenDiarioCarrusel() {
-  const [regionales, nacionales, espectaculos] = await Promise.all([
-    consultarRssGooglePorSitios(MEDIOS_REGIONALES, '24h', 'regional'),
-    consultarRssGooglePorSitios(MEDIOS_NACIONALES, '24h', 'nacional'),
-    consultarRssGooglePorSitios(MEDIOS_ESPECTACULOS, '24h', 'espectaculos')
-  ]);
-
-  const titulares = [...regionales.slice(0, 8), ...nacionales.slice(0, 8), ...espectaculos.slice(0, 5)]
+  const candidatas = await obtenerTodasLasCandidatasRadar();
+  const titulares = candidatas.slice(0, 15)
     .map(t => `- [${t.medio}] ${t.titulo}`)
-    .join('\n');
+    .join('\n')
+    .slice(0, 1600);
 
   const promptResumen = `Sos el Editor Jefe de 'EL REGISTRO SUR' (Caleta Olivia, Santa Cruz). Redactá estrictamente en castellano.
 A partir de los hechos confirmados de hoy en Argentina y Santa Cruz, armá el RESUMEN DIARIO EN CARRUSEL de 5 placas:
@@ -1150,7 +1201,7 @@ Devolvé ÚNICAMENTE este JSON:
     urgente: false,
     imagen_buffer: buffers[0],
     historia_buffer: null,
-    carrusel_buffers: buffers
+    carrusel_buffers: []
   });
 
   return { buffers, copy: copyLimpia };
@@ -1210,14 +1261,6 @@ setInterval(async () => {
         radar.imageBuffer,
         `🚨 RADAR (${radar.medio.toUpperCase()}) — ¿QUERÉS PUBLICARLO?\n\n${radar.noticiaIA.copy}`
       );
-    } else {
-      const alertaVial = await ejecutarAlertaRuta3YServicios();
-      if (alertaVial) {
-        await enviarFotoConBotonesTelegram(
-          alertaVial.imageBuffer,
-          `🚧 ALERTA RUTA 3 / SERVICIOS — ¿QUERÉS PUBLICARLO?\n\n${alertaVial.noticiaIA.copy}`
-        );
-      }
     }
 
     const ahoraAR = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Rio_Gallegos' }));
@@ -1248,7 +1291,7 @@ setInterval(async () => {
 
 app.get('/radar', async (req, res) => {
   const radar = await generarDatosRadar(true);
-  if (!radar) return res.json({ enviado: false, motivo: 'Sin noticias relevantes nuevas en los 21 portales.' });
+  if (!radar) return res.json({ enviado: false, motivo: 'Sin noticias disponibles.' });
   await enviarFotoConBotonesTelegram(radar.imageBuffer, `🚨 RADAR (${radar.medio.toUpperCase()}) — ¿QUERÉS PUBLICARLO?\n\n${radar.noticiaIA.copy}`);
   res.json({ enviado: true, titulo: radar.noticiaIA.titulo, medio: radar.medio });
 });
@@ -1280,6 +1323,13 @@ app.post('/generar', async (req, res) => {
 
     let copy = '';
     texto_crudo = (texto_crudo || '').trim();
+
+    const ahoraMs = Date.now();
+    if (texto_crudo && texto_crudo === ultimoComandoTexto && (ahoraMs - ultimoComandoTimestamp) < 8000) {
+      return res.status(200).json({ ok: true, descartado: true, imagen_base64: '' });
+    }
+    ultimoComandoTexto = texto_crudo;
+    ultimoComandoTimestamp = ahoraMs;
 
     if (callback_query_id) {
       await responderCallbackTelegram(callback_query_id, '⚡ Aplicando acción en El Registro Sur...');
@@ -1367,7 +1417,7 @@ app.post('/generar', async (req, res) => {
     if (comando === 'radar' || comando === 'comandoradar') {
       const radar = await generarDatosRadar(true);
       if (!radar) {
-        await enviarMensajeTelegram('🔎 Revisé los 21 portales y no hay noticias relevantes nuevas en este momento.');
+        await enviarMensajeTelegram('🔎 No se pudieron leer los portales en este momento. Intentá de nuevo en unos segundos.');
         return res.json({ ok: true, descartado: true, imagen_base64: '' });
       }
       return res.json({
@@ -1520,7 +1570,7 @@ app.post('/generar', async (req, res) => {
         categoria: ultimoEstado.categoria,
         titulo: slides[0].titulo,
         destacar: slides[0].destacar,
-        bajada: slides[0].bajada,
+        bajada: slides[0].destacar,
         copy: ultimoEstado.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
@@ -1766,7 +1816,7 @@ app.post('/generar', async (req, res) => {
       fotoDeLink = extraidoLink.fotoExtraida;
       fuenteLink = extraidoLink.fuenteDominio;
       if (extraidoLink.textoExtraido) {
-        textoParaProcesar += `\n\n[DATOS EXTRAÍDOS DEL LINK]:\n${extraidoLink.textoExtraido}`;
+        textoParaProcesar = `${textoParaProcesar}\n\n${extraidoLink.textoExtraido}`.slice(0, 2200);
       }
     }
 
@@ -1782,16 +1832,6 @@ app.post('/generar', async (req, res) => {
 
     if (textoParaProcesar.length > 0) {
       const noticiaIA = await procesarNoticiaConIA(textoParaProcesar, contextoWeb || 'Contexto verificado.', esEdicion);
-
-      if (!esEdicion && noticiaIA.descartar) {
-        await enviarMensajeTelegram(`ℹ️ La noticia fue descartada por falta de respaldo verificable: ${noticiaIA.motivo_descarte || ''}`);
-        return res.json({
-          ok: true,
-          descartado: true,
-          motivo: noticiaIA.motivo_descarte || 'Sin respaldo verificable',
-          imagen_base64: ''
-        });
-      }
 
       categoria = noticiaIA.categoria || ultimoEstado.categoria || 'NOTICIAS / ACTUALIDAD';
       titulo = noticiaIA.titulo || ultimoEstado.titulo || '';
@@ -1878,7 +1918,6 @@ app.post('/generar', async (req, res) => {
   } catch (err) {
     console.error('Error en /generar:', err.message);
     await enviarMensajeTelegram(`⚠️ Aviso del servidor al procesar el pedido: ${err.message}`);
-    // Devuelve 200 OK con imagen_base64 vacía para no bloquear ni encolar Make
     return res.status(200).json({ ok: false, descartado: true, error: err.message, imagen_base64: '' });
   }
 });
