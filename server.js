@@ -99,25 +99,59 @@ function limpiarEmojis(texto) {
     .trim();
 }
 
+// Limpia el copy y asegura que jamás supere los 2200 caracteres permitidos por Meta Business / Instagram
 function filtrarEmojisSegurosRedes(texto) {
   if (!texto) return '';
   let limpio = String(texto)
     .replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, '')
-    .replace(/[\uFE0F\u200D]/g, '');
+    .replace(/[\uFE0F\u200D]/g, '')
+    .replace(/\*\*/g, '');
 
   limpio = limpio.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, (match) => {
     return EMOJIS_SEGUROS_META.has(match) ? match : '';
   });
 
-  return limpio
+  limpio = limpio
     .replace(/\b(fortes)\b/gi, (m) => (m === m.toUpperCase() ? 'FUERTES' : 'fuertes'))
     .replace(/^\s*(?:[0-9]+[\)\.\-]|\bL[íi]nea\s*[0-9]+\s*:|\bP[áa]rrafo\s*[0-9]+\s*:|\bTitular\s*:|\bCierre\s*:)\s*/gim, '')
+    .replace(/\n---\n/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/ +\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
+
+  if (limpio.length > 2180) {
+    const partes = limpio.split('\n\n');
+    const ultimaParte = partes[partes.length - 1] || '';
+    const tieneHashtags = ultimaParte.trim().startsWith('#');
+    if (tieneHashtags && partes.length > 2) {
+      const cuerpoMax = 2170 - ultimaParte.length;
+      let cuerpo = partes.slice(0, -1).join('\n\n');
+      if (cuerpo.length > cuerpoMax) {
+        cuerpo = cuerpo.slice(0, cuerpoMax).replace(/\s+\S*$/, '') + '.';
+      }
+      limpio = `${cuerpo}\n\n${ultimaParte}`;
+    } else {
+      limpio = limpio.slice(0, 2175).replace(/\s+\S*$/, '') + '.';
+    }
+  }
+
+  return limpio;
 }
 
-// Garantiza que las palabras destacadas tengan coherencia semántica completa (jamás corta en "BUQUE DE LA")
+// Recorta el caption para la foto de Telegram (máx 1024 caracteres en la API de Telegram) sin cortar palabras
+function prepararCaptionTelegram(prefijo, copyCompleto) {
+  const textoTotal = prefijo ? `${prefijo}\n\n${copyCompleto}` : copyCompleto;
+  if (textoTotal.length <= 1010) {
+    return { captionFoto: textoTotal, enviarTextoCompletoAparte: false };
+  }
+  const recorte = textoTotal.slice(0, 955).replace(/\s+\S*$/, '');
+  return {
+    captionFoto: `${recorte}...\n\n⬇️ (Nota completa abajo para leer / publicar en Meta)`,
+    enviarTextoCompletoAparte: true
+  };
+}
+
 function asegurarDestacadoEnTitulo(titulo, destacar) {
   const tit = limpiarEmojis(titulo).toUpperCase();
   let des = limpiarEmojis(destacar).toUpperCase();
@@ -218,7 +252,7 @@ async function llamarGroqChat(messages) {
 
       const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(16000),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apiKey}`
@@ -297,7 +331,7 @@ async function enviarMensajeTelegram(texto) {
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: EDITOR_CHAT_ID, text: texto })
+      body: JSON.stringify({ chat_id: EDITOR_CHAT_ID, text: String(texto || '').slice(0, 4050) })
     });
   } catch (e) {}
 }
@@ -346,9 +380,10 @@ async function transcribirAudioConGroq(audioUrl) {
     throw new Error(`Error transcribiendo audio (${resp.status}): ${await resp.text()}`);
   }
   const data = await resp.json();
-  return (data.text || '').slice(0, 1400);
+  return (data.text || '').slice(0, 1800);
 }
 
+// Extrae hasta 10 párrafos limpios para nutrir la nota extendida de hasta 2200 caracteres
 async function extraerNoticiaDeLink(url) {
   try {
     if (!url || url.includes('news.google.com')) {
@@ -381,9 +416,9 @@ async function extraerNoticiaDeLink(url) {
     const parrafos = [...htmlSinBasura.matchAll(/<p(?:\s[^>]*)?>([\s\S]*?)<\/p>/gi)]
       .map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s{2,}/g, ' ').trim())
       .filter(t => t.length > 55 && !t.includes('{') && !t.includes('function('))
-      .slice(0, 5)
+      .slice(0, 10)
       .join('\n')
-      .slice(0, 1100);
+      .slice(0, 2200);
 
     let fotoUrl = ogImageMatch ? ogImageMatch[1] : '';
     if (fotoUrl && fotoUrl.startsWith('/')) {
@@ -392,13 +427,13 @@ async function extraerNoticiaDeLink(url) {
     }
 
     const dominio = new URL(url).hostname.replace('www.', '').split('.')[0].toUpperCase();
-    const tituloLimpio = (ogTitleMatch ? ogTitleMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 200);
-    const bajadaMeta = (ogDescMatch ? ogDescMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 300);
+    const tituloLimpio = (ogTitleMatch ? ogTitleMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 220);
+    const bajadaMeta = (ogDescMatch ? ogDescMatch[1] : '').replace(/\s{2,}/g, ' ').trim().slice(0, 350);
 
     return {
       fotoExtraida: fotoUrl,
       fuenteDominio: dominio,
-      textoExtraido: `TÍTULO ORIGINAL: ${tituloLimpio}\nBAJADA: ${bajadaMeta}\nCUERPO: ${parrafos}`.slice(0, 1400)
+      textoExtraido: `TÍTULO ORIGINAL: ${tituloLimpio}\nBAJADA: ${bajadaMeta}\nCUERPO COMPLETO:\n${parrafos}`.slice(0, 2600)
     };
   } catch (e) {
     return { fotoExtraida: '', fuenteDominio: '', textoExtraido: '' };
@@ -422,12 +457,12 @@ async function buscarContextoEnGoogleNews(consulta) {
     const xml = await resp.text();
 
     const bloques = [...xml.matchAll(/<item[\s>]([\s\S]*?)<\/item>/gi)].map(m => m[1]);
-    const items = bloques.slice(0, 4).map(b => {
+    const items = bloques.slice(0, 5).map(b => {
       const tit = b.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/<!\[CDATA\[|\]\]>/g, '').trim() || '';
       return tit ? `- ${tit}` : '';
-    }).filter(Boolean).join('\n').slice(0, 450);
+    }).filter(Boolean).join('\n').slice(0, 600);
 
-    return items ? `\nANTECEDENTES EN MEDIOS:\n${items}` : '';
+    return items ? `\nANTECEDENTES Y CONTEXTO EN MEDIOS:\n${items}` : '';
   } catch (e) {
     return '';
   }
@@ -476,7 +511,7 @@ async function leerUnFeedRss(fuente) {
         .replace(/<[^>]+>/g, ' ')
         .replace(/\s{2,}/g, ' ')
         .trim()
-        .slice(0, 500);
+        .slice(0, 750);
 
       const medio = sourceMatch
         ? sourceMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim()
@@ -506,7 +541,7 @@ function seleccionarNoticiaRelevante(candidatas, ignorarHistorial = false) {
 
   const regexDescartar = /hor[óo]scopo|quiniela|loter[íi]a|crucigrama|efem[ée]rides|receta|tarot|predicciones/i;
   const regexPrioridadMaxima = /caleta olivia|santa cruz|claudio vidal|ruta 3|ruta nacional 3|ram[óo]n santos|zona norte|pico truncado|las heras|r[íi]o gallegos|ypf|petr[óo]leo|servicios p[úu]blicos|distrigas|acueducto/i;
-  const regexImpactoNacional = /milei|d[óo]lar|inflaci[óo]n|anses|jubilados|combustible|nafta|sueldo|paro|corte|tarifa|impuesto|banco central|selecci[óo]n argentina|boca|river|messi|colapinto|gobierno|empresarios|salarios/i;
+  const regexImpactoNacional = /milei|d[óo]lar|inflaci[óo]n|anses|jubilados|combustible|nafta|sueldo|paro|corte|tarifa|impuesto|banco central|selecci[óo]n argentina|boca|river|messi|colapinto|gobierno|empresarios|salarios|diputados|senado/i;
   const regexBombasEspectaculos = /wanda|icardi|china su[áa]rez|tinelli|susana|mirtha|gran hermano|lam|esc[áa]ndalo|separaci[óo]n|denuncia|luck ra|tiago pzk|la joaqui|duki|mar[íi]a becerra|l-gante|occhiato|granados/i;
 
   const disponibles = candidatas.filter(c => {
@@ -546,7 +581,7 @@ async function obtenerDatosClimaCaleta() {
   const minHoy = Math.round(data.daily?.temperature_2m_min?.[0] ?? 8);
 
   return {
-    texto: `PARTE METEOROLÓGICO OFICIAL PARA CALETA OLIVIA HOY: Temperatura actual ${tempActual}°C (Mínima ${minHoy}°C / Máxima ${maxHoy}°C). Viento sostenido de ${vientoActual} km/h con ráfagas máximas previstas de hasta ${rafagasHoy} km/h en la ciudad y Ruta Nacional N° 3.`,
+    texto: `PARTE METEOROLÓGICO OFICIAL PARA CALETA OLIVIA HOY: Temperatura actual ${tempActual}°C (Mínima ${minHoy}°C / Máxima ${maxHoy}°C). Viento sostenido de ${vientoActual} km/h con ráfagas máximas previstas de hasta ${rafagasHoy} km/h en la ciudad, costanera y Ruta Nacional N° 3.`,
     rafagasHoy
   };
 }
@@ -695,44 +730,51 @@ async function auditarYResolverImagen({
 }
 
 // ============================================================================
-// CEREBRO EDITORIAL: COHERENCIA, ESTÉTICA DE 3 A 4 RENGLONES Y DESTACADO LIMPIO
+// CEREBRO EDITORIAL: DESCRIPCIÓN EXTENSA TIPO PORTAL (1300 A 2100 CARACTERES)
 // ============================================================================
 
 async function procesarNoticiaConIA(textoCrudo, contextoWeb = '', esEdicion = false) {
-  const textoRecortado = String(textoCrudo || '').slice(0, 1500);
-  const contextoRecortado = String(contextoWeb || '').slice(0, 450);
+  const textoRecortado = String(textoCrudo || '').slice(0, 2400);
+  const contextoRecortado = String(contextoWeb || '').slice(0, 600);
 
   const systemPrompt = `Sos el Editor Jefe de 'EL REGISTRO SUR' (@elregistrosur), diario periodístico digital de Caleta Olivia, Santa Cruz.
 IDIOMA: Castellano de Argentina 100% natural, fluido y periodístico.
 
 REGLA 1 — PALABRAS DESTACADAS EN EL TÍTULO ("destacar"):
 - El campo "destacar" define qué palabras del "titulo" se pintan de color celeste/rojo en la placa.
-- OBLIGATORIO: Debe ser una FRASE COMPLETA CON SENTIDO PROPIO Y AUTÓNOMO (un sujeto completo, una acción completa o un lugar completo) de entre 2 y 4 palabras consecutivas que estén exactamente dentro de "titulo".
+- OBLIGATORIO: Debe ser una FRASE COMPLETA CON SENTIDO PROPIO Y AUTÓNOMO de entre 2 y 4 palabras consecutivas exactas dentro de "titulo".
 - PROHIBIDO CORTAR EN CONECTORES: Jamás termines ni empieces "destacar" en artículos o preposiciones sueltas como "DE", "LA", "EL", "DEL", "A", "AL", "EN", "CON", "POR".
-  * EJEMPLO MAL: "BUQUE DE LA" o "ARRIBÓ A" o "GOBIERNO DE".
-  * EJEMPLO BIEN: "BUQUE DE LA ARMADA" o "CALETA OLIVIA" o "NUEVO PARTE CLIMÁTICO".
+  * EJEMPLO MAL: "BUQUE DE LA" o "ARRIBÓ A".
+  * EJEMPLO BIEN: "BUQUE DE LA ARMADA" o "CALETA OLIVIA".
 
 REGLA 2 — SUBTÍTULO DE LA PLACA ("bajada"): COHERENCIA Y ESTÉTICA DE 3 A 4 RENGLONES:
-- PRIORIDAD ABSOLUTA: Coherencia periodística, redacción natural y estética visual.
-- Apuntá idealmente a 3 renglones visuales en la placa, pero PUEDE EXTENDERSE HASTA 4 RENGLONES (entre 20 y 32 palabras / 135 a 210 caracteres) siempre que lo necesite para cerrar la idea con total sentido, fluidez y coherencia.
-- Escribí con todos los artículos y conectores naturales del castellano ("El patrullero oceánico...", "arribó este domingo al muelle..."). Prohibido comer artículos estilo telegrama y prohibido rellenar con frases huecas o gerundios robóticos ("realizando ingreso", "bajo medidas de seguridad").
-- Explicá con claridad qué pasó, quiénes intervienen y por qué importa o qué impacto real tiene en Caleta Olivia, Santa Cruz o el país.
+- Prioridad absoluta: coherencia periodística, redacción natural con todos sus artículos y estética visual.
+- Apuntá idealmente a 3 renglones visuales en la placa, pudiendo extenderse hasta 4 renglones (entre 20 y 32 palabras) para cerrar la idea con total sentido.
 
-REGLA 3 — VOZ Y FORMATO REDES ("copy"):
-- Cero emojis y cero banderas en "categoria", "titulo", "destacar" y "bajada".
-- En "copy": No repitas textualmente la bajada en el primer párrafo. Prohibido usar números como "1)". Usá 2 emojis seguros en el encabezado en mayúsculas y 👇 en el cierre, eligiendo SOLO de esta lista compatible con Facebook: 🚨 🔴 🟠 🟡 🚧 🚔 🚒 🚑 🛑 💨 🌀 🌊 💧 ☔ ⛄ ⛅ ⚡ 🔥 💰 💵 📈 📉 📊 ⛽ 🏭 🚜 🚛 🚢 🐟 📢 📣 📰 📋 📄 📜 🏥 🏫 🎓 👷 🤝 📍 📅 🕒 ⚽ 🏆 🏅 🎭 🎶 👇 👉 📲 💬 ✅ ❌
+REGLA 3 — DESCRIPCIÓN EXTENSA Y DESGLOSADA PARA REDES ("copy" — ENTRE 1.300 Y 2.050 CARACTERES, TOPE MÁXIMO 2.200 DE META BUSINESS):
+Como los lectores leen la noticia entera directamente en la publicación de Facebook e Instagram, "copy" debe ser una NOTA PERIODÍSTICA COMPLETA, EXTENSA Y DESGLOSADA POR PUNTOS (entre 1.300 y 2.050 caracteres, NUNCA superar los 2.200 caracteres), siguiendo EXACTAMENTE esta estructura separada por doble salto de línea (\\n\\n):
+1. ENCABEZADO EN MAYÚSCULAS + 2 emojis seguros al final (ej: "DIPUTADOS: LA OPOSICIÓN CONVOCÓ A UNA SESIÓN ESPECIAL 🏛️📋" usando solo emojis de la lista permitida).
+2. PÁRRAFO 1 (COPETE COMPLETO): Resumen claro de quiénes protagonizan el hecho, qué ocurrió, cuándo/dónde y cuáles son los ejes principales de la noticia.
+3. 3 A 4 PÁRRAFOS TEMÁTICOS CON SUBTÍTULO EN LÍNEA ("Subtema clave: Desarrollo..."): Desglosá cada eje, antecedente, cifra o postura usando un subtítulo corto seguido de dos puntos al inicio del párrafo (ejemplo: "Emergencia en discapacidad: El pedido contempla...", "Endeudamiento familiar: Otro de los puntos...", "El desafío del quórum: Para que la sesión..."). PROHIBIDO usar viñetas (•), guiones (-) o asteriscos (*).
+4. PÁRRAFO DE ESTADO ACTUAL / IMPACTO: Explicá cómo sigue el tema, qué condición falta definir o cómo impacta en Caleta Olivia, Santa Cruz o el bolsillo del vecino.
+5. FIRMA EDITORIAL: Una línea limpia como "Toda la cobertura política, regional y de actualidad en @elregistrosur."
+6. PREGUNTA DE DEBATE + 👇: Una pregunta directa sobre el tema terminando en "Te leemos en comentarios 👇" (o llamado a compartir con vecinos en alertas viales/clima 👇).
+7. BLOQUE DE 8 A 10 HASHTAGS EN MINÚSCULAS: (siempre incluyendo #noticias #elregistrosur #caletaolivia #santacruz #argentina más hashtags específicos del tema).
+
+LISTA BLANCA DE EMOJIS PERMITIDOS EN "copy":
+🚨 🔴 🟠 🟡 🚧 🚔 🚒 🚑 🛑 💨 🌀 🌊 💧 ☔ ⛄ ⛅ ⚡ 🔥 💰 💵 📈 📉 📊 ⛽ 🏭 🚜 🚛 🚢 🐟 📢 📣 📰 📋 📄 📜 🏥 🏫 🎓 👷 🤝 📍 📅 🕒 ⚽ 🏆 🏅 🎭 🎶 👇 👉 📲 💬 ✅ ❌
 
 Devolvé ÚNICAMENTE este JSON:
 {
   "descartar": false,
   "categoria": "SECCIÓN / SUBTEMA EN MAYÚSCULAS SIN EMOJIS",
   "titulo": "TITULAR EN MAYÚSCULAS SIN EMOJIS (5 a 8 palabras)",
-  "destacar": "FRASE COMPLETA CON SENTIDO PROPIO DENTRO DEL TITULO (jamás cortar en DE, LA, EL, A)",
-  "bajada": "Subtítulo periodístico coherente, fluido y estético en castellano SIN EMOJIS (de 20 a 32 palabras para formar 3 renglones ideales o hasta 4 renglones bien cerrados), explicando el hecho y su impacto real con naturalidad.",
+  "destacar": "FRASE COMPLETA CON SENTIDO PROPIO DENTRO DEL TITULO",
+  "bajada": "Subtítulo periodístico coherente, fluido y estético en castellano SIN EMOJIS (de 20 a 32 palabras para formar 3 a 4 renglones).",
   "dato_clave": "Cifra central si existe, o vacío",
   "autor_cita": "Nombre y cargo si hay cita, o vacío",
   "fuente_credito": "Crédito corto en MAYÚSCULAS",
-  "copy": "Texto plano en castellano separado por \\n\\n: encabezado en MAYÚSCULAS con 2 emojis seguros; luego 2 a 3 párrafos fluidos con datos verificados, contexto y consecuencia real; luego cierre invitando a seguir @elregistrosur terminado en 👇; luego ---; luego 6 a 8 hashtags en minúsculas (#noticias #elregistrosur #caletaolivia #santacruz).",
+  "copy": "Nota periodística extensa en texto plano (1300 a 2050 caracteres, máximo 2200) con la estructura exacta: TITULAR + 2 emojis\\n\\nCopete inicial\\n\\nSubtema 1: Desarrollo detallado...\\n\\nSubtema 2: Desarrollo detallado...\\n\\nSubtema 3: Desarrollo detallado...\\n\\nPárrafo de resolución o impacto.\\n\\nToda la cobertura en @elregistrosur.\\n\\n¿Pregunta de debate? Te leemos en comentarios 👇\\n\\n#hashtag1 #hashtag2 #noticias #elregistrosur #caletaolivia #santacruz",
   "slides_carrusel": [
     { "titulo": "TITULAR PORTADA", "destacar": "FRASE CON SENTIDO", "bajada": "Subtítulo coherente y bien redactado de 3 a 4 renglones (20 a 30 palabras) sobre el hecho principal." },
     { "titulo": "ANTECEDENTES Y DATOS CLAVE", "destacar": "DATOS CLAVE", "bajada": "Subtítulo coherente y bien redactado de 3 a 4 renglones (20 a 30 palabras) con las cifras y el contexto." },
@@ -748,9 +790,9 @@ Devolvé ÚNICAMENTE este JSON:
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: String(ultimoEstado.copy || '').slice(0, 700)
-      })}\n\nCambio pedido: "${textoRecortado}". Devolvé JSON priorizando coherencia y estética (3 a 4 renglones en bajada y destacado con sentido completo).`
-    : `Noticia:\n"${textoRecortado}"\n${contextoRecortado}\nRedactá en castellano de Argentina fluido y coherente en JSON, con destacado semántico completo y bajada estética de 3 a 4 renglones.`;
+        copy: String(ultimoEstado.copy || '').slice(0, 1400)
+      })}\n\nCambio pedido: "${textoRecortado}". Devolvé JSON manteniendo la descripción extensa (1300 a 2050 caracteres, máx 2200) con subtítulos en línea.`
+    : `Noticia:\n"${textoRecortado}"\n${contextoRecortado}\nRedactá en castellano de Argentina en JSON con descripción extensa desglosada por subtemas (entre 1300 y 2050 caracteres, sin superar los 2200 caracteres de Meta).`;
 
   const parsed = await llamarGroqChat([
     { role: 'system', content: systemPrompt },
@@ -1157,17 +1199,23 @@ async function renderizarFlyer({
   }
 }
 
-async function enviarFotoConBotonesTelegram(imageBuffer, captionTexto) {
+async function enviarFotoConBotonesTelegram(imageBuffer, prefijo, copyCompleto) {
+  const { captionFoto, enviarTextoCompletoAparte } = prepararCaptionTelegram(prefijo, copyCompleto);
+
   const form = new FormData();
   form.append('chat_id', EDITOR_CHAT_ID);
   form.append('photo', new Blob([imageBuffer], { type: 'image/png' }), 'flyer_2k.png');
-  form.append('caption', captionTexto.slice(0, 1020));
+  form.append('caption', captionFoto);
   form.append('reply_markup', JSON.stringify(generarTecladoTactil()));
 
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`, {
     method: 'POST',
     body: form
   });
+
+  if (enviarTextoCompletoAparte) {
+    await enviarMensajeTelegram(`📝 DESCRIPCIÓN COMPLETA PARA META (${copyCompleto.length}/2200 caracteres):\n\n${copyCompleto}`);
+  }
 }
 
 async function generarDatosRadar(forzar = false) {
@@ -1318,7 +1366,7 @@ REGLAS ESTRICTAS:
 - PROHIBIDO emojis o banderas en los títulos y bajadas de las placas.
 - "destacar": Frase completa con sentido propio dentro del título (prohibido cortar en DE, LA, EL, A).
 - "bajada": Subtítulo coherente, fluido y estético de 3 a 4 renglones (20 a 30 palabras) con todos sus artículos.
-- En "copy", usá texto 100% plano en castellano sin números como 1), con emojis seguros de Facebook (🚨, 📰, 📍, 👇) y hashtags en minúsculas.
+- En "copy", redactá una descripción extensa desglosando los 4 temas con subtítulos en línea (entre 1.200 y 2.000 caracteres, máx 2.200), emojis seguros de Facebook (🚨, 📰, 📍, 👇) y hashtags en minúsculas.
 
 Titulares del día:
 ${titulares}
@@ -1332,7 +1380,7 @@ Devolvé ÚNICAMENTE este JSON:
     { "titulo": "TITULAR TEMA 3", "destacar": "FRASE CON SENTIDO", "bajada": "Oración informativa coherente y natural de 20 a 30 palabras explicando el hecho y su impacto directo en la comunidad." },
     { "titulo": "TITULAR TEMA 4", "destacar": "FRASE CON SENTIDO", "bajada": "Oración informativa coherente y natural de 20 a 30 palabras explicando el hecho y su impacto directo en la comunidad." }
   ],
-  "copy": "📰 RESUMEN DEL DÍA EN EL REGISTRO SUR 📍\\n\\nRepaso rápido con los hechos clave de hoy en Caleta Olivia, Santa Cruz y el país.\\n\\nDeslizá para ver cada tema y seguí @elregistrosur para estar informado 👇\\n\\n---\\n\\n#noticias #elregistrosur #caletaolivia #santacruz #resumendeldia #patagonia"
+  "copy": "RESUMEN DEL DÍA EN EL REGISTRO SUR 📰📍\\n\\nRepaso completo con los hechos más importantes que dejaron la jornada en Caleta Olivia, Santa Cruz y el ámbito nacional.\\n\\nTema 1: Desarrollo claro...\\n\\nTema 2: Desarrollo claro...\\n\\nTema 3: Desarrollo claro...\\n\\nTema 4: Desarrollo claro...\\n\\nToda la cobertura regional y nacional en @elregistrosur.\\n\\n¿Cuál de estos temas te parece más relevante hoy? Te leemos en comentarios 👇\\n\\n#noticias #elregistrosur #caletaolivia #santacruz #resumendeldia #patagonia #actualidad #argentina"
 }`;
 
   const parsed = await llamarGroqChat([{ role: 'user', content: promptResumen }]);
@@ -1443,7 +1491,8 @@ setInterval(async () => {
     if (radar) {
       await enviarFotoConBotonesTelegram(
         radar.imageBuffer,
-        `🚨 RADAR (${radar.medio.toUpperCase()}) — ¿QUERÉS PUBLICARLO?\n\n${radar.noticiaIA.copy}`
+        `🚨 RADAR (${radar.medio.toUpperCase()}) — ¿QUERÉS PUBLICARLO?`,
+        radar.noticiaIA.copy
       );
     }
 
@@ -1453,13 +1502,13 @@ setInterval(async () => {
     if (ahoraAR.getHours() === 8 && ahoraAR.getMinutes() >= 25 && ultimoClimaDiaEnviado !== fechaHoy) {
       ultimoClimaDiaEnviado = fechaHoy;
       const { imageBuffer, noticiaIA } = await ejecutarParteClima();
-      await enviarFotoConBotonesTelegram(imageBuffer, `📢 PARTE DIARIO DE CLIMA Y VIENTO:\n\n${noticiaIA.copy}`);
+      await enviarFotoConBotonesTelegram(imageBuffer, '📢 PARTE DIARIO DE CLIMA Y VIENTO:', noticiaIA.copy);
     }
 
     if (ahoraAR.getHours() === 21 && ahoraAR.getMinutes() < 35 && ultimoResumenDiaEnviado !== fechaHoy) {
       ultimoResumenDiaEnviado = fechaHoy;
       const resumen = await ejecutarResumenDiarioCarrusel();
-      await enviarFotoConBotonesTelegram(resumen.buffers[0], resumen.copy);
+      await enviarFotoConBotonesTelegram(resumen.buffers[0], '📰 RESUMEN DIARIO:', resumen.copy);
       for (let i = 1; i < resumen.buffers.length; i++) {
         const f = new FormData();
         f.append('chat_id', EDITOR_CHAT_ID);
@@ -1476,15 +1525,31 @@ setInterval(async () => {
 app.get('/radar', async (req, res) => {
   const radar = await generarDatosRadar(true);
   if (!radar) return res.json({ enviado: false, motivo: 'Sin noticias disponibles.' });
-  await enviarFotoConBotonesTelegram(radar.imageBuffer, `🚨 RADAR (${radar.medio.toUpperCase()}) — ¿QUERÉS PUBLICARLO?\n\n${radar.noticiaIA.copy}`);
+  await enviarFotoConBotonesTelegram(radar.imageBuffer, `🚨 RADAR (${radar.medio.toUpperCase()}) — ¿QUERÉS PUBLICARLO?`, radar.noticiaIA.copy);
   res.json({ enviado: true, titulo: radar.noticiaIA.titulo, medio: radar.medio });
 });
 
 app.get('/clima', async (req, res) => {
   const { imageBuffer, noticiaIA } = await ejecutarParteClima();
-  await enviarFotoConBotonesTelegram(imageBuffer, `📢 PARTE DIARIO DE CLIMA Y VIENTO:\n\n${noticiaIA.copy}`);
+  await enviarFotoConBotonesTelegram(imageBuffer, '📢 PARTE DIARIO DE CLIMA Y VIENTO:', noticiaIA.copy);
   res.json({ ok: true, titulo: noticiaIA.titulo });
 });
+
+// Envía respuesta a Make con caption seguro para la foto de Telegram (<=1010 chars) y manda el texto largo completo aparte si supera 1010 chars
+async function responderConPlacaYCopyExtenso(res, payload, prefijoTelegram = '') {
+  const copyCompleto = ultimoEstado.copy || payload.copy || '';
+  const { captionFoto, enviarTextoCompletoAparte } = prepararCaptionTelegram(prefijoTelegram, copyCompleto);
+
+  if (enviarTextoCompletoAparte) {
+    enviarMensajeTelegram(`📝 DESCRIPCIÓN COMPLETA PARA META (${copyCompleto.length}/2200 caracteres):\n\n${copyCompleto}`);
+  }
+
+  return res.json({
+    ...payload,
+    copy: captionFoto,
+    copy_completo: copyCompleto
+  });
+}
 
 app.post('/generar', async (req, res) => {
   try {
@@ -1559,7 +1624,7 @@ app.post('/generar', async (req, res) => {
       const creditoVecino = argumento || 'MATERIAL EXCLUSIVO';
       const bufMarcada = await estamparMarcaDeAguaFoto(fotoOrigen, creditoVecino);
 
-      const captionMarca = `📢 REGISTRO EXCLUSIVO EN EL REGISTRO SUR 📍\n\nMaterial enviado a nuestra redacción (${creditoVecino}).\n\nSeguí @elregistrosur para ver toda la cobertura de Caleta Olivia y Santa Cruz 👇\n\n---\n\n#noticias #elregistrosur #caletaolivia #santacruz #exclusivo #patagonia`;
+      const captionMarca = `REGISTRO EXCLUSIVO EN EL REGISTRO SUR 📢📍\n\nMaterial enviado a nuestra redacción (${creditoVecino}).\n\nToda la cobertura de Caleta Olivia y Santa Cruz en @elregistrosur 👇\n\n#noticias #elregistrosur #caletaolivia #santacruz #exclusivo #patagonia`;
 
       guardarEnColaBorradores({
         foto_url: fotoOrigen,
@@ -1581,9 +1646,8 @@ app.post('/generar', async (req, res) => {
         carrusel_buffers: []
       });
 
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
-        copy: captionMarca,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: bufMarcada.toString('base64')
@@ -1596,17 +1660,16 @@ app.post('/generar', async (req, res) => {
         await enviarMensajeTelegram('🔎 No se pudieron leer los portales en este momento. Intentá de nuevo en unos segundos.');
         return res.json({ ok: true, descartado: true, imagen_base64: '' });
       }
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: `🚨 RADAR (${radar.medio.toUpperCase()}) — ¿QUERÉS PUBLICARLO?\n\n${ultimoEstado.copy}`,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: ultimoEstado.imagen_buffer.toString('base64')
-      });
+      }, `🚨 RADAR (${radar.medio.toUpperCase()}) — ¿QUERÉS PUBLICARLO?`);
     }
 
     if (comando === 'ruta3' || comando === 'ruta') {
@@ -1615,17 +1678,16 @@ app.post('/generar', async (req, res) => {
         await enviarMensajeTelegram('✅ Sin cortes ni alertas recientes reportadas en Ruta Nacional N° 3 o servicios de Caleta Olivia.');
         return res.json({ ok: true, descartado: true, imagen_base64: '' });
       }
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: `🚧 ALERTA RUTA 3 / SERVICIOS:\n\n${ultimoEstado.copy}`,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: ultimoEstado.imagen_buffer.toString('base64')
-      });
+      }, '🚧 ALERTA RUTA 3 / SERVICIOS:');
     }
 
     if (comando === 'resumen') {
@@ -1637,11 +1699,10 @@ app.post('/generar', async (req, res) => {
         f.append('caption', `📑 Placa ${i + 1}/${resumen.buffers.length} del resumen diario`);
         await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`, { method: 'POST', body: f });
       }
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: 'RESUMEN DEL DÍA',
         titulo: ultimoEstado.titulo,
-        copy: resumen.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: resumen.buffers[0].toString('base64')
@@ -1650,13 +1711,12 @@ app.post('/generar', async (req, res) => {
 
     if (comando === 'clima' || comando === 'comandoclima') {
       await ejecutarParteClima();
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: ultimoEstado.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: ultimoEstado.imagen_buffer.toString('base64')
@@ -1681,13 +1741,12 @@ app.post('/generar', async (req, res) => {
       ultimoEstado.modo_visual = comando;
       ultimoEstado.imagen_buffer = imageBuffer;
 
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: ultimoEstado.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: imageBuffer.toString('base64')
@@ -1736,13 +1795,12 @@ app.post('/generar', async (req, res) => {
         });
       }
 
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: ultimoEstado.categoria,
         titulo: slides[0].titulo,
         destacar: slides[0].destacar,
         bajada: slides[0].bajada,
-        copy: ultimoEstado.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: buffers[0].toString('base64')
@@ -1781,13 +1839,12 @@ app.post('/generar', async (req, res) => {
       ultimoEstado.fuente_credito = fuenteFinal;
       ultimoEstado.imagen_buffer = imageBuffer;
 
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: ultimoEstado.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: imageBuffer.toString('base64')
@@ -1810,14 +1867,13 @@ app.post('/generar', async (req, res) => {
         modoVisual: ultimoEstado.modo_visual
       });
       ultimoEstado.historia_buffer = historiaBuffer;
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         es_historia: true,
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: ultimoEstado.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-historia.png?t=${Date.now()}`,
         imagen_base64: historiaBuffer.toString('base64')
@@ -1844,13 +1900,12 @@ app.post('/generar', async (req, res) => {
       ultimoEstado.modo_visual = 'estandar';
       ultimoEstado.imagen_buffer = imageBuffer;
 
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: ultimoEstado.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: imageBuffer.toString('base64')
@@ -1877,13 +1932,12 @@ app.post('/generar', async (req, res) => {
       ultimoEstado.urgente = true;
       ultimoEstado.imagen_buffer = imageBuffer;
 
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: ultimoEstado.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: imageBuffer.toString('base64')
@@ -1910,13 +1964,12 @@ app.post('/generar', async (req, res) => {
       ultimoEstado.modo_visual = 'estandar';
       ultimoEstado.imagen_buffer = imageBuffer;
 
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: ultimoEstado.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: imageBuffer.toString('base64')
@@ -1951,13 +2004,12 @@ app.post('/generar', async (req, res) => {
       ultimoEstado.fuente_credito = 'ILUSTRACIÓN IA';
       ultimoEstado.imagen_buffer = imageBuffer;
 
-      return res.json({
+      return responderConPlacaYCopyExtenso(res, {
         ok: true,
         categoria: ultimoEstado.categoria,
         titulo: ultimoEstado.titulo,
         destacar: ultimoEstado.destacar,
         bajada: ultimoEstado.bajada,
-        copy: ultimoEstado.copy,
         reply_markup_json: replyMarkupJson,
         url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
         imagen_base64: imageBuffer.toString('base64')
@@ -1978,7 +2030,7 @@ app.post('/generar', async (req, res) => {
       fotoDeLink = extraidoLink.fotoExtraida;
       fuenteLink = extraidoLink.fuenteDominio;
       if (extraidoLink.textoExtraido) {
-        textoParaProcesar = `${textoParaProcesar}\n\n${extraidoLink.textoExtraido}`.slice(0, 1500);
+        textoParaProcesar = `${textoParaProcesar}\n\n${extraidoLink.textoExtraido}`.slice(0, 2400);
       }
     }
 
@@ -2066,14 +2118,13 @@ app.post('/generar', async (req, res) => {
       guardarEnColaBorradores(nuevoEstado);
     }
 
-    return res.json({
+    return responderConPlacaYCopyExtenso(res, {
       ok: true,
       es_edicion: esEdicion,
       categoria,
       titulo,
       destacar,
       bajada,
-      copy,
       reply_markup_json: replyMarkupJson,
       url_imagen_publica: `https://el-registro-sur.onrender.com/ultima-imagen.png?t=${Date.now()}`,
       imagen_base64: imageBuffer.toString('base64')
